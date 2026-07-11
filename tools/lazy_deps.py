@@ -134,6 +134,15 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "sounddevice==0.5.5",
         "numpy==2.4.3",
     ),
+    # NVIDIA Parakeet-TDT via the MLX backend (Apple Silicon only).
+    "stt.parakeet": ("parakeet-mlx==0.5.2",),
+
+    # ─── Google Calendar (user-consent OAuth) ──────────────────────────────
+    "google.calendar": (
+        "google-api-python-client==2.149.0",
+        "google-auth==2.35.0",
+        "google-auth-oauthlib==1.2.1",
+    ),
 
     # ─── Image generation backends ─────────────────────────────────────────
     "image.fal": ("fal-client==0.13.1",),

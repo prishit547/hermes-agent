@@ -1499,12 +1499,14 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_chat": True,
                 "session_chat_streaming": True,
                 "session_fork": True,
-                "admin_config_rw": False,
-                "jobs_admin": False,
+                "admin_config_rw": True,
+                "jobs_admin": True,
                 "memory_write_api": False,
                 "skills_api": True,
-                "audio_api": False,
-                "realtime_voice": False,
+                "model_admin": True,
+                "mcp_admin": True,
+                "audio_api": True,
+                "realtime_voice": True,
                 "session_continuity_header": "X-Hermes-Session-Id",
                 "session_key_header": "X-Hermes-Session-Key",
                 "cors": bool(self._cors_origins),
@@ -1531,6 +1533,20 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_fork": {"method": "POST", "path": "/api/sessions/{session_id}/fork"},
                 "session_chat": {"method": "POST", "path": "/api/sessions/{session_id}/chat"},
                 "session_chat_stream": {"method": "POST", "path": "/api/sessions/{session_id}/chat/stream"},
+                "model": {"method": "GET", "path": "/api/model"},
+                "model_options": {"method": "GET", "path": "/api/model/options"},
+                "model_set": {"method": "POST", "path": "/api/model/set"},
+                "mcp_servers": {"method": "GET", "path": "/api/mcp/servers"},
+                "mcp_server_add": {"method": "POST", "path": "/api/mcp/servers"},
+                "mcp_server_delete": {"method": "DELETE", "path": "/api/mcp/servers/{name}"},
+                "mcp_server_enabled": {"method": "PUT", "path": "/api/mcp/servers/{name}/enabled"},
+                "mcp_server_test": {"method": "POST", "path": "/api/mcp/servers/{name}/test"},
+                "mcp_catalog": {"method": "GET", "path": "/api/mcp/catalog"},
+                "mcp_catalog_install": {"method": "POST", "path": "/api/mcp/catalog/install"},
+                "jobs": {"method": "GET", "path": "/api/jobs"},
+                "audio_transcriptions": {"method": "POST", "path": "/v1/audio/transcriptions"},
+                "audio_speech": {"method": "POST", "path": "/v1/audio/speech"},
+                "voice_stream": {"method": "GET", "path": "/v1/voice/stream"},
             },
         })
 
@@ -1620,6 +1636,576 @@ class APIServerAdapter(BasePlatformAdapter):
             "platform": "api_server",
             "data": data,
         })
+
+    # ------------------------------------------------------------------
+    # /api/model — read + switch the configured model (admin RW)
+    # ------------------------------------------------------------------
+    #
+    # These mirror the dashboard's ``/api/model/*`` endpoints onto the
+    # authenticated api_server so a remote client (the mobile app over
+    # Tailscale) can read and change the active model through the same
+    # Bearer-authed surface instead of the loopback-only dashboard. Writes
+    # land in ``~/.hermes/config.yaml`` and apply to NEW sessions; a running
+    # gateway must be restarted (or use the ``/model`` slash command) to pick
+    # up the change.
+
+    async def _handle_get_model(self, request: "web.Request") -> "web.Response":
+        """GET /api/model — the currently configured main model + provider."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        try:
+            from hermes_cli.config import load_config
+            cfg = load_config().get("model", "")
+            if isinstance(cfg, dict):
+                model = cfg.get("default") or cfg.get("name") or ""
+                provider = cfg.get("provider") or ""
+                base_url = cfg.get("base_url") or ""
+            else:
+                model, provider, base_url = (str(cfg) if cfg else ""), "", ""
+        except Exception:
+            logger.exception("GET /api/model failed")
+            return web.json_response(
+                _openai_error("Failed to read model config", err_type="server_error"),
+                status=500,
+            )
+        return web.json_response({
+            "object": "hermes.model",
+            "model": model,
+            "provider": provider,
+            "base_url": base_url,
+        })
+
+    async def _handle_model_options(self, request: "web.Request") -> "web.Response":
+        """GET /api/model/options — authenticated providers + curated model lists.
+
+        Reuses the same picker payload the dashboard Models page renders, so a
+        mobile switcher can offer the identical provider/model catalog without
+        the loopback dashboard. Heavy (may fetch live model catalogs), so it's
+        run off the event loop.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        refresh = _coerce_request_bool(request.query.get("refresh"), default=False)
+        try:
+            from hermes_cli.inventory import build_models_payload, load_picker_context
+
+            def _build():
+                return build_models_payload(
+                    load_picker_context(),
+                    picker_hints=True,
+                    canonical_order=True,
+                    pricing=True,
+                    capabilities=True,
+                    refresh=refresh,
+                    probe_current_custom_provider=not refresh,
+                )
+
+            loop = asyncio.get_running_loop()
+            payload = await loop.run_in_executor(None, _build)
+        except Exception:
+            logger.exception("GET /api/model/options failed")
+            return web.json_response(
+                _openai_error("Failed to list model options", err_type="server_error"),
+                status=500,
+            )
+        return web.json_response(payload)
+
+    async def _handle_set_model(self, request: "web.Request") -> "web.Response":
+        """POST /api/model/set — assign the main (or an auxiliary) model slot.
+
+        Body mirrors the dashboard ``ModelAssignment``:
+        ``{scope, provider, model, task?, base_url?, api_key?,
+        confirm_expensive_model?}``. Reuses the dashboard's config-writer so
+        provider/model normalization, custom-endpoint registration and the
+        expensive-model guard behave identically. Returns the writer's result
+        dict (which may carry ``confirm_required`` for a costly model).
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+
+        scope = str(body.get("scope") or "main").strip().lower()
+        provider = str(body.get("provider") or "").strip()
+        model = str(body.get("model") or "").strip()
+        task = str(body.get("task") or "").strip().lower()
+        base_url = str(body.get("base_url") or "").strip()
+        api_key = str(body.get("api_key") or "").strip()
+        confirm = bool(body.get("confirm_expensive_model") or False)
+        if scope not in {"main", "auxiliary"}:
+            return web.json_response(
+                _openai_error("scope must be 'main' or 'auxiliary'"), status=400)
+
+        try:
+            from hermes_cli import web_server as _ws
+        except Exception:
+            logger.exception("POST /api/model/set: model management unavailable")
+            return web.json_response(
+                _openai_error(
+                    "Model management is unavailable on this install",
+                    err_type="server_error",
+                    code="model_admin_unavailable",
+                ),
+                status=503,
+            )
+
+        # Expensive-model guard (mirrors the dashboard): warn before committing
+        # a costly model unless the caller has confirmed.
+        if scope == "main" and model and not confirm:
+            try:
+                from hermes_cli.model_cost_guard import expensive_model_warning
+                loop = asyncio.get_running_loop()
+                warning = await loop.run_in_executor(
+                    None,
+                    lambda: expensive_model_warning(model, provider=provider, base_url=base_url),
+                )
+            except Exception:
+                warning = None
+            if warning is not None:
+                return web.json_response({
+                    "ok": False,
+                    "scope": scope,
+                    "provider": provider,
+                    "model": model,
+                    "confirm_required": True,
+                    "confirm_message": warning.message,
+                })
+
+        try:
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(
+                None,
+                lambda: _ws._apply_model_assignment_sync(
+                    scope, provider, model, task, base_url, api_key
+                ),
+            )
+        except Exception as exc:
+            # The dashboard writer raises fastapi.HTTPException for validation
+            # errors; surface its status/detail without importing fastapi here.
+            status = getattr(exc, "status_code", None)
+            detail = getattr(exc, "detail", None)
+            if isinstance(status, int):
+                return web.json_response(_openai_error(str(detail or "Invalid model assignment")), status=status)
+            logger.exception("POST /api/model/set failed")
+            return web.json_response(
+                _openai_error("Failed to save model assignment", err_type="server_error"),
+                status=500,
+            )
+        return web.json_response(result)
+
+    # ------------------------------------------------------------------
+    # /api/mcp — manage MCP servers (config.yaml ``mcp_servers``)
+    # ------------------------------------------------------------------
+    #
+    # Bearer-authed mirror of the dashboard's ``/api/mcp/*`` endpoints, reusing
+    # the plain config helpers in ``hermes_cli/mcp_config.py``. Changes are
+    # written to ``~/.hermes/config.yaml`` and take effect on the NEXT session
+    # (the running gateway must reload/restart to see them).
+
+    @staticmethod
+    def _mcp_server_summary(name: str, cfg: Dict[str, Any]) -> Dict[str, Any]:
+        """Client-safe view of one MCP server entry (secret env values masked)."""
+        try:
+            from hermes_cli.web_server import redact_key
+        except Exception:
+            def redact_key(v: str) -> str:  # type: ignore
+                s = str(v or "")
+                return (s[:2] + "***" + s[-2:]) if len(s) > 6 else "***"
+        env = {}
+        for k, v in (cfg.get("env") or {}).items():
+            env[str(k)] = redact_key(str(v)) if v else ""
+        transport = "http" if cfg.get("url") else ("stdio" if cfg.get("command") else "unknown")
+        return {
+            "name": name,
+            "transport": transport,
+            "url": cfg.get("url"),
+            "command": cfg.get("command"),
+            "args": list(cfg.get("args") or []),
+            "env": env,
+            "auth": cfg.get("auth"),
+            "enabled": cfg.get("enabled", True) is not False,
+            "tools": cfg.get("tools"),
+        }
+
+    async def _handle_list_mcp(self, request: "web.Request") -> "web.Response":
+        """GET /api/mcp/servers — list configured MCP servers."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        try:
+            from hermes_cli.mcp_config import _get_mcp_servers
+            servers = _get_mcp_servers()
+        except Exception:
+            logger.exception("GET /api/mcp/servers failed")
+            return web.json_response(
+                _openai_error("Failed to list MCP servers", err_type="server_error"),
+                status=500,
+            )
+        return web.json_response({
+            "object": "list",
+            "servers": [self._mcp_server_summary(n, c) for n, c in sorted(servers.items())],
+        })
+
+    async def _handle_add_mcp(self, request: "web.Request") -> "web.Response":
+        """POST /api/mcp/servers — add a server ({name, url|command, args?, env?, auth?})."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+        name = str(body.get("name") or "").strip()
+        if not name:
+            return web.json_response(_openai_error("Server name is required"), status=400)
+        url = str(body.get("url") or "").strip()
+        command = str(body.get("command") or "").strip()
+        if not url and not command:
+            return web.json_response(
+                _openai_error("Provide either a URL (HTTP server) or a command (stdio server)"),
+                status=400,
+            )
+        try:
+            from hermes_cli.mcp_config import _get_mcp_servers, _save_mcp_server
+            if name in _get_mcp_servers():
+                return web.json_response(
+                    _openai_error(f"Server '{name}' already exists", code="mcp_exists"), status=409)
+            server_config: Dict[str, Any] = {}
+            if url:
+                server_config["url"] = url
+            if command:
+                server_config["command"] = command
+                args = body.get("args")
+                if isinstance(args, list) and args:
+                    server_config["args"] = [str(a) for a in args]
+                env = body.get("env")
+                if isinstance(env, dict) and env:
+                    server_config["env"] = {str(k): str(v) for k, v in env.items()}
+            if body.get("auth"):
+                server_config["auth"] = str(body["auth"])
+            loop = asyncio.get_running_loop()
+            saved = await loop.run_in_executor(None, lambda: _save_mcp_server(name, server_config))
+            if not saved:
+                return web.json_response(
+                    _openai_error(
+                        f"Server '{name}' rejected: suspicious command/args configuration",
+                        code="mcp_rejected",
+                    ),
+                    status=400,
+                )
+        except Exception:
+            logger.exception("POST /api/mcp/servers failed")
+            return web.json_response(
+                _openai_error("Failed to add MCP server", err_type="server_error"),
+                status=500,
+            )
+        return web.json_response(
+            {"object": "hermes.mcp_server", "server": self._mcp_server_summary(name, server_config)},
+            status=201,
+        )
+
+    async def _handle_delete_mcp(self, request: "web.Request") -> "web.Response":
+        """DELETE /api/mcp/servers/{name}."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        name = request.match_info["name"]
+        try:
+            from hermes_cli.mcp_config import _remove_mcp_server
+            loop = asyncio.get_running_loop()
+            removed = await loop.run_in_executor(None, lambda: _remove_mcp_server(name))
+        except Exception:
+            logger.exception("DELETE /api/mcp/servers failed")
+            return web.json_response(
+                _openai_error("Failed to remove MCP server", err_type="server_error"),
+                status=500,
+            )
+        if not removed:
+            return web.json_response(
+                _openai_error(f"Server '{name}' not found", code="mcp_not_found"), status=404)
+        return web.json_response({"object": "hermes.mcp_server.deleted", "name": name, "deleted": True})
+
+    async def _handle_set_mcp_enabled(self, request: "web.Request") -> "web.Response":
+        """PUT /api/mcp/servers/{name}/enabled — toggle a server on/off ({enabled: bool})."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        name = request.match_info["name"]
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+        enabled = bool(body.get("enabled", True))
+        try:
+            from hermes_cli.config import load_config, save_config
+
+            def _toggle():
+                cfg = load_config()
+                servers = cfg.get("mcp_servers")
+                if not isinstance(servers, dict) or name not in servers:
+                    return False
+                if not isinstance(servers[name], dict):
+                    raise ValueError("Malformed server config")
+                servers[name]["enabled"] = enabled
+                save_config(cfg)
+                return True
+
+            loop = asyncio.get_running_loop()
+            found = await loop.run_in_executor(None, _toggle)
+        except ValueError as exc:
+            return web.json_response(_openai_error(str(exc)), status=400)
+        except Exception:
+            logger.exception("PUT /api/mcp/servers/{name}/enabled failed")
+            return web.json_response(
+                _openai_error("Failed to toggle MCP server", err_type="server_error"),
+                status=500,
+            )
+        if not found:
+            return web.json_response(
+                _openai_error(f"Server '{name}' not found", code="mcp_not_found"), status=404)
+        return web.json_response({"object": "hermes.mcp_server", "name": name, "enabled": enabled})
+
+    async def _handle_test_mcp(self, request: "web.Request") -> "web.Response":
+        """POST /api/mcp/servers/{name}/test — connect, list tools, disconnect."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        name = request.match_info["name"]
+        try:
+            from hermes_cli.mcp_config import _get_mcp_servers, _probe_single_server
+
+            servers = _get_mcp_servers()
+            if name not in servers:
+                return web.json_response(
+                    _openai_error(f"Server '{name}' not found", code="mcp_not_found"), status=404)
+
+            details: Dict[str, Any] = {}
+
+            def _probe():
+                return _probe_single_server(name, servers[name], details=details)
+
+            loop = asyncio.get_running_loop()
+            tools = await loop.run_in_executor(None, _probe)
+        except Exception as exc:
+            return web.json_response({"ok": False, "error": str(exc), "tools": []})
+        return web.json_response({
+            "ok": True,
+            "tools": [{"name": t, "description": d} for t, d in tools],
+            "prompts": details.get("prompts", 0),
+            "resources": details.get("resources", 0),
+        })
+
+    async def _handle_mcp_catalog(self, request: "web.Request") -> "web.Response":
+        """GET /api/mcp/catalog — browse the installable MCP catalog."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        try:
+            from hermes_cli import mcp_catalog
+
+            def _build():
+                out = []
+                for entry in mcp_catalog.list_catalog():
+                    auth = entry.auth
+                    transport = entry.transport
+                    out.append({
+                        "name": entry.name,
+                        "description": entry.description,
+                        "source": entry.source,
+                        "transport": transport.type,
+                        "auth_type": getattr(auth, "type", "none"),
+                        "installed": mcp_catalog.is_installed(entry.name),
+                        "enabled": mcp_catalog.is_enabled(entry.name),
+                        "required_env": [
+                            {"name": e.name, "prompt": e.prompt, "required": e.required}
+                            for e in (getattr(auth, "env", []) or [])
+                        ],
+                    })
+                return out
+
+            loop = asyncio.get_running_loop()
+            entries = await loop.run_in_executor(None, _build)
+        except Exception:
+            logger.exception("GET /api/mcp/catalog failed")
+            return web.json_response(
+                _openai_error("MCP catalog unavailable", err_type="server_error"),
+                status=500,
+            )
+        return web.json_response({"object": "list", "data": entries})
+
+    async def _handle_mcp_catalog_install(self, request: "web.Request") -> "web.Response":
+        """POST /api/mcp/catalog/install — install a catalog server by name ({name})."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+        name = str(body.get("name") or body.get("identifier") or "").strip()
+        if not name:
+            return web.json_response(_openai_error("Catalog entry name is required"), status=400)
+        try:
+            from hermes_cli.mcp_picker import install_by_name
+            loop = asyncio.get_running_loop()
+            rc = await loop.run_in_executor(None, lambda: install_by_name(name))
+        except Exception as exc:
+            logger.exception("POST /api/mcp/catalog/install failed")
+            return web.json_response(
+                _openai_error(f"Install failed: {exc}", err_type="server_error"),
+                status=500,
+            )
+        ok = not rc
+        return web.json_response({"ok": ok, "name": name, "code": rc or 0}, status=200 if ok else 502)
+
+    # ------------------------------------------------------------------
+    # /v1/audio — speech-to-text and text-to-speech
+    # ------------------------------------------------------------------
+    #
+    # These mirror the dashboard's ``/api/audio/*`` endpoints
+    # (hermes_cli/web_server.py) onto the authenticated api_server so remote
+    # clients (e.g. the mobile app over Tailscale) use one Bearer-authed
+    # surface. The shared decode/transcribe/synthesize logic lives in
+    # tools/audio_endpoints_core.py so both servers stay in sync.
+
+    async def _handle_audio_transcribe(self, request: "web.Request") -> "web.Response":
+        """POST /v1/audio/transcriptions — speech-to-text.
+
+        Accepts either a multipart form with a ``file`` field (OpenAI-style),
+        or a JSON body with a base64 ``data_url`` and optional ``mime_type``
+        (the dashboard desktop-voice contract). Returns ``{"text", "provider"}``.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        from tools.audio_endpoints_core import (
+            AudioRequestError,
+            decode_audio_data_url,
+            transcribe_audio_bytes,
+        )
+
+        content_type = (request.headers.get("Content-Type") or "").lower()
+        try:
+            if content_type.startswith("multipart/form-data"):
+                reader = await request.multipart()
+                audio_bytes: Optional[bytes] = None
+                mime_type = "audio/webm"
+                async for part in reader:
+                    if part.name == "file":
+                        mime_type = part.headers.get("Content-Type", mime_type)
+                        audio_bytes = await part.read(decode=False)
+                        break
+                if not audio_bytes:
+                    return web.json_response(
+                        _openai_error("Missing 'file' field in multipart body"),
+                        status=400,
+                    )
+            else:
+                body = await request.json()
+                audio_bytes, mime_type = decode_audio_data_url(
+                    body.get("data_url") or body.get("file") or "",
+                    body.get("mime_type"),
+                )
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(
+                None, transcribe_audio_bytes, audio_bytes, mime_type
+            )
+        except AudioRequestError as exc:
+            return web.json_response(_openai_error(exc.detail), status=exc.status_code)
+        except json.JSONDecodeError:
+            return web.json_response(_openai_error("Invalid JSON body"), status=400)
+        except Exception:
+            logger.exception("POST /v1/audio/transcriptions failed")
+            return web.json_response(
+                _openai_error("Transcription failed", err_type="server_error"),
+                status=500,
+            )
+
+        return web.json_response(
+            {"text": result["transcript"], "provider": result["provider"]}
+        )
+
+    async def _handle_audio_speak(self, request: "web.Request") -> "web.Response":
+        """POST /v1/audio/speech — text-to-speech.
+
+        Body: ``{"input": "..."}`` (or ``{"text": "..."}``). Returns raw audio
+        bytes by default so the client can stream/buffer them directly. Pass
+        ``?format=json`` or ``Accept: application/json`` to instead receive a
+        base64 ``data_url`` JSON body (the dashboard contract).
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        from tools.audio_endpoints_core import (
+            AudioRequestError,
+            speech_data_url,
+            synthesize_speech,
+        )
+
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response(_openai_error("Invalid JSON body"), status=400)
+
+        text = body.get("input") or body.get("text") or ""
+        try:
+            loop = asyncio.get_running_loop()
+            audio_bytes, mime_type, provider = await loop.run_in_executor(
+                None, synthesize_speech, text
+            )
+        except AudioRequestError as exc:
+            return web.json_response(_openai_error(exc.detail), status=exc.status_code)
+        except Exception:
+            logger.exception("POST /v1/audio/speech failed")
+            return web.json_response(
+                _openai_error("Speech synthesis failed", err_type="server_error"),
+                status=500,
+            )
+
+        want_json = (
+            request.query.get("format") == "json"
+            or "application/json" in (request.headers.get("Accept") or "").lower()
+        )
+        if want_json:
+            return web.json_response({
+                "data_url": speech_data_url(audio_bytes, mime_type),
+                "mime_type": mime_type,
+                "provider": provider,
+            })
+
+        return web.Response(
+            body=audio_bytes,
+            content_type=mime_type,
+            headers={"X-TTS-Provider": provider or ""},
+        )
+
+    async def _handle_audio_voices(self, request: "web.Request") -> "web.Response":
+        """GET /v1/audio/voices — list ElevenLabs voices when a key is configured."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        from tools.audio_endpoints_core import (
+            AudioRequestError,
+            list_elevenlabs_voices,
+        )
+
+        try:
+            loop = asyncio.get_running_loop()
+            payload = await loop.run_in_executor(None, list_elevenlabs_voices)
+        except AudioRequestError as exc:
+            return web.json_response(_openai_error(exc.detail), status=exc.status_code)
+        except Exception:
+            logger.exception("GET /v1/audio/voices failed")
+            return web.json_response(
+                _openai_error("Could not load voices", err_type="server_error"),
+                status=500,
+            )
+
+        return web.json_response(payload)
 
     # ------------------------------------------------------------------
     # /api/sessions — thin client/session resource API
@@ -4773,6 +5359,16 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/v1/capabilities", self._handle_capabilities)
             self._app.router.add_get("/v1/skills", self._handle_skills)
             self._app.router.add_get("/v1/toolsets", self._handle_toolsets)
+
+            self._app.router.add_post("/v1/audio/transcriptions", self._handle_audio_transcribe)
+            self._app.router.add_post("/v1/audio/speech", self._handle_audio_speak)
+            self._app.router.add_get("/v1/audio/voices", self._handle_audio_voices)
+            # Realtime hands-free voice pipeline (WebSocket + barge-in).
+            try:
+                from gateway.platforms.api_voice_stream import register_voice_routes
+                register_voice_routes(self._app, self)
+            except Exception:
+                logger.exception("Failed to register /v1/voice/stream route")
             # Session/client control surface (thin wrappers over SessionDB + _run_agent)
             self._app.router.add_get("/api/sessions", self._handle_list_sessions)
             self._app.router.add_post("/api/sessions", self._handle_create_session)
@@ -4796,6 +5392,18 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/api/jobs/{job_id}/pause", self._handle_pause_job)
             self._app.router.add_post("/api/jobs/{job_id}/resume", self._handle_resume_job)
             self._app.router.add_post("/api/jobs/{job_id}/run", self._handle_run_job)
+            # Model management (read + switch) — Bearer-authed mirror of the dashboard.
+            self._app.router.add_get("/api/model", self._handle_get_model)
+            self._app.router.add_get("/api/model/options", self._handle_model_options)
+            self._app.router.add_post("/api/model/set", self._handle_set_model)
+            # MCP server management (config.yaml ``mcp_servers``).
+            self._app.router.add_get("/api/mcp/servers", self._handle_list_mcp)
+            self._app.router.add_post("/api/mcp/servers", self._handle_add_mcp)
+            self._app.router.add_delete("/api/mcp/servers/{name}", self._handle_delete_mcp)
+            self._app.router.add_put("/api/mcp/servers/{name}/enabled", self._handle_set_mcp_enabled)
+            self._app.router.add_post("/api/mcp/servers/{name}/test", self._handle_test_mcp)
+            self._app.router.add_get("/api/mcp/catalog", self._handle_mcp_catalog)
+            self._app.router.add_post("/api/mcp/catalog/install", self._handle_mcp_catalog_install)
 
             # Chronos managed-cron fire webhook (NAS → agent). Authenticated by a
             # NAS-minted JWT (NOT API_SERVER_KEY), so it has its own auth path.

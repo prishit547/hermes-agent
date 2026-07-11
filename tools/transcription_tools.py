@@ -2,10 +2,13 @@
 """
 Transcription Tools Module
 
-Provides speech-to-text transcription with six providers:
+Provides speech-to-text transcription with these providers:
 
   - **local** (default, free) — faster-whisper running locally, no API key needed.
     Auto-downloads the model (~150 MB for ``base``) on first use.
+  - **parakeet** (free, local, Apple Silicon) — NVIDIA Parakeet-TDT via the MLX
+    backend (``parakeet-mlx``). Auto-selected over faster-whisper on Apple
+    Silicon when installed. Set ``stt.parakeet.model``/``model_path`` to override.
   - **groq** (free tier) — Groq Whisper API, requires ``GROQ_API_KEY``.
   - **openai** (paid) — OpenAI Whisper API, requires ``VOICE_TOOLS_OPENAI_KEY``.
   - **mistral** — Mistral Voxtral Transcribe API, requires ``MISTRAL_API_KEY``.
@@ -27,12 +30,15 @@ Usage::
         print(result["transcript"])
 """
 
+import concurrent.futures
 import logging
 import os
+import platform
 import shlex
 import shutil
 import subprocess
 import tempfile
+import threading
 from pathlib import Path
 from typing import Optional, Dict, Any
 from urllib.parse import urljoin
@@ -79,6 +85,9 @@ def _safe_find_spec(module_name: str) -> bool:
 _HAS_FASTER_WHISPER = _safe_find_spec("faster_whisper")
 _HAS_OPENAI = _safe_find_spec("openai")
 _HAS_MISTRAL = _safe_find_spec("mistralai")
+# Parakeet-TDT runs via the MLX backend, so it needs both packages and is
+# only meaningful on Apple Silicon. Kept lazy so non-Mac hosts never import mlx.
+_HAS_PARAKEET = _safe_find_spec("parakeet_mlx") and _safe_find_spec("mlx")
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -86,6 +95,7 @@ _HAS_MISTRAL = _safe_find_spec("mistralai")
 
 DEFAULT_PROVIDER = "local"
 DEFAULT_LOCAL_MODEL = "base"
+DEFAULT_PARAKEET_MODEL = "mlx-community/parakeet-tdt-0.6b-v2"
 DEFAULT_LOCAL_STT_LANGUAGE = "en"
 DEFAULT_STT_MODEL = os.getenv("STT_OPENAI_MODEL", "whisper-1")
 DEFAULT_GROQ_STT_MODEL = os.getenv("STT_GROQ_MODEL", "whisper-large-v3-turbo")
@@ -111,6 +121,29 @@ GROQ_MODELS = {"whisper-large-v3", "whisper-large-v3-turbo", "distil-whisper-lar
 # Singleton for the local model — loaded once, reused across calls
 _local_model: Optional[object] = None
 _local_model_name: Optional[str] = None
+
+# Singleton for the Parakeet MLX model — loaded once, reused across calls
+_parakeet_model: Optional[object] = None
+_parakeet_model_name: Optional[str] = None
+
+# MLX keeps its stream/device state thread-local, so a model loaded on one
+# thread and evaluated on another raises "no Stream(...) in current thread".
+# The api_server calls transcription from a thread-pool worker, so we pin all
+# MLX work (load + inference) to one dedicated single-worker thread. Every call
+# routes through it, keeping the model and its streams on a consistent thread.
+_parakeet_executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
+_parakeet_executor_lock = threading.Lock()
+
+
+def _get_parakeet_executor() -> concurrent.futures.ThreadPoolExecutor:
+    global _parakeet_executor
+    if _parakeet_executor is None:
+        with _parakeet_executor_lock:
+            if _parakeet_executor is None:
+                _parakeet_executor = concurrent.futures.ThreadPoolExecutor(
+                    max_workers=1, thread_name_prefix="parakeet-mlx"
+                )
+    return _parakeet_executor
 
 # ---------------------------------------------------------------------------
 # Config helpers
@@ -142,6 +175,11 @@ def _has_openai_audio_backend() -> bool:
         return True
     except ValueError:
         return False
+
+
+def _is_apple_silicon() -> bool:
+    """Return True on Apple-Silicon macOS, where the MLX backend is usable."""
+    return platform.system() == "Darwin" and platform.machine() == "arm64"
 
 
 def _find_binary(binary_name: str) -> Optional[str]:
@@ -229,7 +267,28 @@ def _try_lazy_install_stt() -> bool:
     return False
 
 
-# Names of the 6 STT providers with native handlers in this module.
+def _try_lazy_install_parakeet() -> bool:
+    """Attempt to lazy-install parakeet-mlx and return True on success.
+
+    Mirrors ``_try_lazy_install_stt``: the module-level ``_HAS_PARAKEET`` flag
+    is cached at import time, so after ``ensure()`` installs the package we
+    re-check dynamically to use it without a process restart. Only meaningful
+    on Apple Silicon (the MLX backend requires it).
+    """
+    try:
+        from tools.lazy_deps import ensure
+        # prompt=False for the same reason as faster-whisper: never block on
+        # input() while prompt_toolkit owns stdin. Gated by allow_lazy_installs.
+        ensure("stt.parakeet", prompt=False)
+        import importlib.util as _iu
+        if _iu.find_spec("parakeet_mlx") and _iu.find_spec("mlx"):
+            return True
+    except Exception as exc:
+        logger.debug("Lazy install of parakeet-mlx failed: %s", exc)
+    return False
+
+
+# Names of the built-in STT providers with native handlers in this module.
 # Kept in sync with ``agent.transcription_registry._BUILTIN_NAMES`` —
 # a regression test fails if they drift. The plugin hook from
 # issue #30398-style follow-up rejects plugins registering under any
@@ -238,6 +297,7 @@ def _try_lazy_install_stt() -> bool:
 BUILTIN_STT_PROVIDERS = frozenset({
     "local",
     "local_command",
+    "parakeet",
     "groq",
     "openai",
     "mistral",
@@ -255,8 +315,8 @@ BUILTIN_STT_PROVIDERS = frozenset({
 # become an STT backend with zero Python.
 #
 # Resolution order:
-#   1. Built-in (``local``, ``local_command``, ``groq``, ``openai``,
-#      ``mistral``, ``xai``)              → native handler. **Always wins.**
+#   1. Built-in (``local``, ``local_command``, ``parakeet``, ``groq``,
+#      ``openai``, ``mistral``, ``xai``)  → native handler. **Always wins.**
 #   2. ``stt.providers.<name>: type: command``  → command-provider runner.
 #   3. Plugin-registered TranscriptionProvider  → plugin dispatch.
 #   4. No match                                 → "No STT provider available".
@@ -784,6 +844,21 @@ def _get_provider(stt_config: dict) -> str:
             )
             return "none"
 
+        if provider == "parakeet":
+            if _HAS_PARAKEET:
+                return "parakeet"
+            # Try lazy-install before giving up (Apple Silicon only)
+            if _try_lazy_install_parakeet():
+                return "parakeet"
+            if _HAS_FASTER_WHISPER:
+                logger.info("Parakeet MLX unavailable, using local faster-whisper")
+                return "local"
+            logger.warning(
+                "STT provider 'parakeet' configured but unavailable "
+                "(requires Apple Silicon + parakeet-mlx)"
+            )
+            return "none"
+
         if provider == "groq":
             if _HAS_OPENAI and get_env_value("GROQ_API_KEY"):
                 return "groq"
@@ -829,10 +904,17 @@ def _get_provider(stt_config: dict) -> str:
 
         return provider  # Unknown — let it fail downstream
 
-    # --- Auto-detect (no explicit provider): local > groq > openai > xai > elevenlabs -
+    # --- Auto-detect (no explicit provider):
+    #     parakeet (Apple Silicon) > local > groq > openai > xai > elevenlabs -
     # mistral is intentionally skipped while `mistralai` is quarantined on
     # PyPI (malicious 2.4.6 release on 2026-05-12).
 
+    # Prefer Parakeet on Apple Silicon when it's already installed — better
+    # accuracy/speed than faster-whisper on that hardware. Only auto-select
+    # when the package is present; never trigger a lazy-install during passive
+    # auto-detection (explicit `provider: parakeet` above does install).
+    if _is_apple_silicon() and _HAS_PARAKEET:
+        return "parakeet"
     if _HAS_FASTER_WHISPER:
         return "local"
     if _has_local_command():
@@ -1172,6 +1254,82 @@ def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
     except Exception as e:
         logger.error("Local transcription failed: %s", e, exc_info=True)
         return {"success": False, "transcript": "", "error": f"Local transcription failed: {e}"}
+
+
+def _transcribe_parakeet(file_path: str, model_name: str) -> Dict[str, Any]:
+    """Transcribe using NVIDIA Parakeet-TDT via parakeet-mlx (local, Apple Silicon).
+
+    Mirrors ``_transcribe_local``: a module-global singleton caches the loaded
+    model across calls, keyed on the model name/path so switching models evicts
+    it. Non-native audio is normalized to WAV via the shared
+    ``_prepare_local_audio`` helper before handing the path to parakeet-mlx.
+    """
+    global _parakeet_model, _parakeet_model_name
+
+    if not _HAS_PARAKEET:
+        if not _try_lazy_install_parakeet():
+            return {
+                "success": False,
+                "transcript": "",
+                "provider": "parakeet",
+                "error": (
+                    "parakeet-mlx not installed (requires Apple Silicon + "
+                    "`pip install parakeet-mlx`)"
+                ),
+            }
+
+    try:
+        from parakeet_mlx import from_pretrained
+    except ImportError as exc:
+        return {
+            "success": False,
+            "transcript": "",
+            "provider": "parakeet",
+            "error": f"parakeet-mlx import failed: {exc}",
+        }
+
+    def _load_and_transcribe(audio_path: str) -> object:
+        # Runs on the dedicated Parakeet thread so model load and inference
+        # share one MLX stream/device context.
+        global _parakeet_model, _parakeet_model_name
+        if _parakeet_model is None or _parakeet_model_name != model_name:
+            logger.info(
+                "Loading Parakeet MLX model '%s' (first load may download the model)...",
+                model_name,
+            )
+            _parakeet_model = from_pretrained(model_name)
+            _parakeet_model_name = model_name
+        return _parakeet_model.transcribe(audio_path)
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="hermes-parakeet-") as work_dir:
+            audio_path, prep_error = _prepare_local_audio(file_path, work_dir)
+            if prep_error:
+                return {
+                    "success": False,
+                    "transcript": "",
+                    "provider": "parakeet",
+                    "error": prep_error,
+                }
+            result = _get_parakeet_executor().submit(
+                _load_and_transcribe, audio_path
+            ).result()
+
+        transcript = (getattr(result, "text", None) or "").strip()
+        logger.info(
+            "Transcribed %s via Parakeet MLX (%s, %d chars)",
+            Path(file_path).name, model_name, len(transcript),
+        )
+        return {"success": True, "transcript": transcript, "provider": "parakeet"}
+
+    except Exception as e:
+        logger.error("Parakeet transcription failed: %s", e, exc_info=True)
+        return {
+            "success": False,
+            "transcript": "",
+            "provider": "parakeet",
+            "error": f"Parakeet transcription failed: {e}",
+        }
 
 
 def _prepare_local_audio(file_path: str, work_dir: str) -> tuple[Optional[str], Optional[str]]:
@@ -1669,6 +1827,19 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
             model or local_cfg.get("model", DEFAULT_LOCAL_MODEL)
         )
         return _transcribe_local_command(file_path, model_name)
+
+    if provider == "parakeet":
+        parakeet_cfg = stt_config.get("parakeet") or {}
+        # A local path (stt.parakeet.model_path) wins over the HF model id so
+        # a fully-offline install is possible; otherwise use the configured
+        # model id or the default. Not run through _normalize_local_model —
+        # that coerces names to faster-whisper sizes and would corrupt an id.
+        model_name = (
+            model
+            or parakeet_cfg.get("model_path")
+            or parakeet_cfg.get("model", DEFAULT_PARAKEET_MODEL)
+        )
+        return _transcribe_parakeet(file_path, model_name)
 
     if provider == "groq":
         model_name = model or DEFAULT_GROQ_STT_MODEL

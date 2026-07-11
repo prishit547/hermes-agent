@@ -65,6 +65,8 @@ _HERMES_CORE_TOOLS = [
     "execute_code", "delegate_task",
     # Cronjob management
     "cronjob",
+    # Google Calendar (gated on OAuth config/authorization via check_fn)
+    "google_calendar",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
     # Kanban multi-agent coordination — only in schema when the agent is
@@ -186,7 +188,13 @@ TOOLSETS = {
         "tools": ["cronjob"],
         "includes": []
     },
-    
+
+    "google_calendar": {
+        "description": "Google Calendar: list/create/update/delete events, natural-language quick-add, list calendars",
+        "tools": ["google_calendar"],
+        "includes": []
+    },
+
 
     "file": {
         "description": "File manipulation tools: read, write, patch (with fuzzy matching), and search (content + files)",

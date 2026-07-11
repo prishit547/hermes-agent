@@ -12,8 +12,18 @@ class ShellController extends ChangeNotifier {
   bool _voiceOpen = false;
   bool get voiceOpen => _voiceOpen;
 
+  final Map<AtlTab, DateTime> _lastTabVisits = {
+    AtlTab.today: DateTime.now(),
+    AtlTab.chat: DateTime.now(),
+    AtlTab.calendar: DateTime.now(),
+    AtlTab.inbox: DateTime.now(),
+  };
+
+  DateTime lastVisit(AtlTab t) => _lastTabVisits[t] ?? DateTime.fromMillisecondsSinceEpoch(0);
+
   void go(AtlTab t) {
     _tab = t;
+    _lastTabVisits[t] = DateTime.now();
     _voiceOpen = false;
     notifyListeners();
   }

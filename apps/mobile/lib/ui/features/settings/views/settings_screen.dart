@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../../../data/services/notification_service.dart';
 import '../../mcp/mcp_screen.dart';
 import '../email_settings_screen.dart';
 import '../model_switcher.dart';
@@ -18,6 +19,7 @@ class SettingsScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final vm = context.watch<SettingsViewModel>();
+    final notificationService = context.watch<NotificationService>();
     final scheme = Theme.of(context).colorScheme;
 
     return Scaffold(
@@ -110,7 +112,12 @@ class SettingsScreen extends StatelessWidget {
                 border: OutlineInputBorder(),
               ),
             ),
-            const SizedBox(height: 24),
+            const SizedBox(height: 16),
+            _NtfyConnectionStatus(
+              hasNtfy: vm.ntfyServer.isNotEmpty && vm.ntfyTopic.isNotEmpty,
+              isConnected: notificationService.isConnected,
+            ),
+            const SizedBox(height: 8),
             _ProbeBanner(probe: vm.probe),
             const SizedBox(height: 12),
             Row(
@@ -239,6 +246,52 @@ class _StatusRow extends StatelessWidget {
         const SizedBox(width: 8),
         Expanded(child: Text(text, style: TextStyle(color: color))),
       ],
+    );
+  }
+}
+
+class _NtfyConnectionStatus extends StatelessWidget {
+  const _NtfyConnectionStatus({required this.hasNtfy, required this.isConnected});
+  final bool hasNtfy;
+  final bool isConnected;
+
+  @override
+  Widget build(BuildContext context) {
+    if (!hasNtfy) {
+      return const SizedBox.shrink();
+    }
+    final scheme = Theme.of(context).colorScheme;
+    final color = isConnected ? const Color(0xFF1EA88A) : scheme.error;
+    final text = isConnected
+        ? 'ntfy: Connected'
+        : 'ntfy: Disconnected (waiting for connection or settings save)';
+    final icon = isConnected ? Icons.cloud_done_outlined : Icons.cloud_off_outlined;
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: isConnected ? const Color(0x1F7FEBD0) : scheme.errorContainer.withOpacity(0.1),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(
+          color: isConnected ? const Color(0x4D7FEBD0) : scheme.error.withOpacity(0.2),
+        ),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, color: color, size: 18),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              text,
+              style: TextStyle(
+                color: isConnected ? color : scheme.onErrorContainer,
+                fontSize: 13,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

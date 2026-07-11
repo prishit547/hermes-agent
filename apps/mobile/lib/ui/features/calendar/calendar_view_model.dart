@@ -1,4 +1,7 @@
+import 'dart:convert';
+
 import 'package:flutter/foundation.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 
 import '../../../data/repositories/calendar_repository.dart';
@@ -29,7 +32,9 @@ class CalendarViewModel extends ChangeNotifier {
   })  : _calendar = calendarRepository,
         _chat = chatRepository,
         _reminders = reminderService,
-        _jobs = jobsRepository;
+        _jobs = jobsRepository {
+    _reminders.addListener(_onRemindersChanged);
+  }
 
   final CalendarRepository _calendar;
   final ChatRepository _chat;
@@ -64,10 +69,31 @@ class CalendarViewModel extends ChangeNotifier {
     return {for (final k in sortedKeys) k: (map[k]!..sort((a, b) => a.start.compareTo(b.start)))};
   }
 
+  static const _cacheKey = 'hermes.calendar_cache';
+
   /// Load once (cached). Tab switches rebuild the screen, so this avoids
   /// re-fetching on every open. Also loads server tasks.
   Future<void> loadIfNeeded() async {
     if (_loadedOnce || _loading) return;
+    _loading = true;
+    notifyListeners();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getStringList(_cacheKey);
+      if (raw != null && raw.isNotEmpty) {
+        _events = raw.map((s) {
+          try {
+            return CalendarEvent.fromJson(jsonDecode(s) as Map<String, dynamic>);
+          } catch (_) {
+            return null;
+          }
+        }).whereType<CalendarEvent>().toList();
+        _loadedOnce = true;
+        _loading = false;
+        notifyListeners();
+      }
+    } catch (_) {}
+
     await load();
     await loadTasks();
   }
@@ -80,12 +106,20 @@ class CalendarViewModel extends ChangeNotifier {
     notifyListeners();
 
     final local = _localEvents();
-    _events = [...local];
+    final nonAlarms = _events.where((e) => e.kind != CalendarKind.alarm).toList();
+    _events = [...local, ...nonAlarms]..sort((a, b) => a.start.compareTo(b.start));
     notifyListeners();
 
     try {
       final googleEvents = await _fetchGoogleEvents();
       _events = [...local, ...googleEvents]..sort((a, b) => a.start.compareTo(b.start));
+
+      // Save to SharedPreferences cache
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setStringList(
+        _cacheKey,
+        _events.map((e) => jsonEncode(e.toJson())).toList(),
+      );
     } catch (e) {
       _error = 'Calendar sync failed: $e';
     } finally {
@@ -132,7 +166,7 @@ class CalendarViewModel extends ChangeNotifier {
   /// Fetch Google Calendar events via the fast structured endpoint (~1s).
   Future<List<CalendarEvent>> _fetchGoogleEvents() async {
     try {
-      final events = await _calendar.listEvents(days: 14);
+      final events = await _calendar.listEvents(days: 60);
       _google = GoogleCalState.connected;
       return events;
     } on HermesApiException catch (e) {
@@ -173,4 +207,16 @@ class CalendarViewModel extends ChangeNotifier {
     }
   }
 
+  void _onRemindersChanged() {
+    final nonAlarms = _events.where((e) => e.kind != CalendarKind.alarm).toList();
+    final newLocal = _localEvents();
+    _events = [...newLocal, ...nonAlarms]..sort((a, b) => a.start.compareTo(b.start));
+    notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    _reminders.removeListener(_onRemindersChanged);
+    super.dispose();
+  }
 }

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_widget_from_html/flutter_widget_from_html.dart';
 import 'package:provider/provider.dart';
 
 import '../../../data/repositories/email_repository.dart';
@@ -181,10 +182,12 @@ class _EmailDetailScreenState extends State<EmailDetailScreen> {
                           ],
                         ),
                         const SizedBox(height: 18),
-                        Text(_full?.body?.trim().isNotEmpty == true
-                            ? _full!.body!.trim()
-                            : s.snippet,
-                            style: atlSans(size: 15, color: atl.text, height: 1.5)),
+                        HtmlWidget(
+                          _full?.body?.trim().isNotEmpty == true
+                              ? _full!.body!.trim()
+                              : s.snippet,
+                          textStyle: atlSans(size: 15, color: atl.text, height: 1.5),
+                        ),
                         const SizedBox(height: 24),
                         Divider(color: atl.divider),
                         const SizedBox(height: 14),

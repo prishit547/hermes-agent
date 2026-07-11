@@ -6,6 +6,8 @@ import 'package:provider/provider.dart';
 import '../../core/atl_theme.dart';
 import '../calendar/calendar_screen.dart';
 import '../chat/views/chat_screen.dart';
+import '../../../../data/services/notification_service.dart';
+import '../email/email_view_model.dart';
 import '../inbox/inbox_screen.dart';
 import '../music/mini_player.dart';
 import '../today/today_screen.dart';
@@ -82,6 +84,36 @@ class _AtlTabBar extends StatelessWidget {
     // widget is constructed const in the Scaffold.
     final shell = context.watch<ShellController>();
     final active = shell.tab;
+    final notifications = context.watch<NotificationService>();
+    final emailVM = context.watch<EmailViewModel>();
+
+    final todayVisit = shell.lastVisit(AtlTab.today);
+    final showTodayDot = active != AtlTab.today && notifications.inbox.any((n) => n.receivedAt.isAfter(todayVisit));
+
+    final chatVisit = shell.lastVisit(AtlTab.chat);
+    final showChatDot = active != AtlTab.chat && notifications.inbox.any((n) {
+      if (!n.receivedAt.isAfter(chatVisit)) return false;
+      final t = n.title.toLowerCase();
+      final m = n.message.toLowerCase();
+      return t.contains('chat') || m.contains('chat') ||
+             t.contains('message') || m.contains('message') ||
+             t.contains('agent') || m.contains('agent');
+    });
+
+    final calendarVisit = shell.lastVisit(AtlTab.calendar);
+    final showCalendarDot = active != AtlTab.calendar && notifications.inbox.any((n) {
+      if (!n.receivedAt.isAfter(calendarVisit)) return false;
+      final t = n.title.toLowerCase();
+      final m = n.message.toLowerCase();
+      return t.contains('reminder') || m.contains('reminder') ||
+             t.contains('alarm') || m.contains('alarm') ||
+             t.contains('calendar') || m.contains('calendar') ||
+             t.contains('event') || m.contains('event') ||
+             t.contains('task') || m.contains('task') ||
+             t.contains('due') || m.contains('due');
+    });
+
+    final showInboxDot = active != AtlTab.inbox && emailVM.unreadCount > 0;
 
     // Trim the oversized home-indicator gap while keeping a little clearance.
     final rawBottom = MediaQuery.viewPaddingOf(context).bottom;
@@ -113,12 +145,14 @@ class _AtlTabBar extends StatelessWidget {
                 active: active == AtlTab.today,
                 onTap: () => shell.go(AtlTab.today),
                 icon: Icons.home_outlined,
+                showDot: showTodayDot,
               ),
               _TabItem(
                 label: 'Chat',
                 active: active == AtlTab.chat,
                 onTap: () => shell.go(AtlTab.chat),
                 icon: Icons.chat_bubble_outline,
+                showDot: showChatDot,
               ),
               Expanded(child: _CenterOrbButton(onTap: shell.openVoice)),
               _TabItem(
@@ -126,12 +160,14 @@ class _AtlTabBar extends StatelessWidget {
                 active: active == AtlTab.calendar,
                 onTap: () => shell.go(AtlTab.calendar),
                 icon: Icons.calendar_today_outlined,
+                showDot: showCalendarDot,
               ),
               _TabItem(
                 label: 'Inbox',
                 active: active == AtlTab.inbox,
                 onTap: () => shell.go(AtlTab.inbox),
                 icon: Icons.inbox_outlined,
+                showDot: showInboxDot,
               ),
             ],
           ),
@@ -147,12 +183,14 @@ class _TabItem extends StatelessWidget {
     required this.active,
     required this.onTap,
     required this.icon,
+    this.showDot = false,
   });
 
   final String label;
   final bool active;
   final VoidCallback onTap;
   final IconData icon;
+  final bool showDot;
 
   @override
   Widget build(BuildContext context) {
@@ -166,15 +204,33 @@ class _TabItem extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           children: [
             // Active tab gets a gentle pop; color eases between states.
-            AnimatedScale(
-              scale: active ? 1.12 : 1.0,
-              duration: const Duration(milliseconds: 220),
-              curve: Curves.easeOutBack,
-              child: TweenAnimationBuilder<Color?>(
-                tween: ColorTween(end: color),
-                duration: const Duration(milliseconds: 220),
-                builder: (_, c, _) => Icon(icon, size: 23, color: c),
-              ),
+            Stack(
+              clipBehavior: Clip.none,
+              children: [
+                AnimatedScale(
+                  scale: active ? 1.12 : 1.0,
+                  duration: const Duration(milliseconds: 220),
+                  curve: Curves.easeOutBack,
+                  child: TweenAnimationBuilder<Color?>(
+                    tween: ColorTween(end: color),
+                    duration: const Duration(milliseconds: 220),
+                    builder: (_, c, _) => Icon(icon, size: 23, color: c),
+                  ),
+                ),
+                if (showDot)
+                  Positioned(
+                    top: -2,
+                    right: -2,
+                    child: Container(
+                      width: 7,
+                      height: 7,
+                      decoration: const BoxDecoration(
+                        color: Colors.redAccent,
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                  ),
+              ],
             ),
             const SizedBox(height: 4),
             AnimatedDefaultTextStyle(

@@ -22,10 +22,35 @@ class _CalendarScreenState extends State<CalendarScreen> {
   final _addController = TextEditingController();
   bool _adding = false;
 
+  DateTime _currentMonth = DateTime.now();
+  DateTime _selectedDay = DateTime.now();
+
   static const _months = [
     'January', 'February', 'March', 'April', 'May', 'June',
     'July', 'August', 'September', 'October', 'November', 'December'
   ];
+
+  bool _isSameDay(DateTime a, DateTime b) =>
+      a.year == b.year && a.month == b.month && a.day == b.day;
+
+  List<DateTime> _daysInMonthGrid(DateTime monthDate) {
+    final firstDayOfMonth = DateTime(monthDate.year, monthDate.month, 1);
+    final startOffset = firstDayOfMonth.weekday % 7;
+    final startDate = firstDayOfMonth.subtract(Duration(days: startOffset));
+    return List.generate(42, (idx) => startDate.add(Duration(days: idx)));
+  }
+
+  void _prevMonth() {
+    setState(() {
+      _currentMonth = DateTime(_currentMonth.year, _currentMonth.month - 1);
+    });
+  }
+
+  void _nextMonth() {
+    setState(() {
+      _currentMonth = DateTime(_currentMonth.year, _currentMonth.month + 1);
+    });
+  }
 
   @override
   void initState() {
@@ -51,6 +76,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
     setState(() => _adding = false);
     if (ok) {
       _addController.clear();
+      await vm.load();
     } else {
       ScaffoldMessenger.of(context)
         ..clearSnackBars()
@@ -62,8 +88,9 @@ class _CalendarScreenState extends State<CalendarScreen> {
   Widget build(BuildContext context) {
     final atl = context.atl;
     final vm = context.watch<CalendarViewModel>();
-    final now = DateTime.now();
     final byDay = vm.byDay;
+    final selectedDayZero = DateTime(_selectedDay.year, _selectedDay.month, _selectedDay.day);
+    final dayEvents = byDay[selectedDayZero] ?? [];
 
     return RefreshIndicator(
       onRefresh: () async {
@@ -76,7 +103,22 @@ class _CalendarScreenState extends State<CalendarScreen> {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(_months[now.month - 1], style: atlSerif(size: 30, color: atl.text)),
+              Row(
+                children: [
+                  IconButton(
+                    icon: Icon(Icons.chevron_left, color: atl.text),
+                    onPressed: _prevMonth,
+                  ),
+                  Text(
+                    '${_months[_currentMonth.month - 1]} ${_currentMonth.year}',
+                    style: atlSerif(size: 22, color: atl.text),
+                  ),
+                  IconButton(
+                    icon: Icon(Icons.chevron_right, color: atl.text),
+                    onPressed: _nextMonth,
+                  ),
+                ],
+              ),
               Pressable(
                 onTap: () => openReminders(context),
                 child: Container(
@@ -100,6 +142,10 @@ class _CalendarScreenState extends State<CalendarScreen> {
             ],
           ),
           const SizedBox(height: 14),
+
+          // Visual Calendar Grid
+          _calendarGrid(atl, vm),
+          const SizedBox(height: 16),
 
           // Natural-language add → agent
           Container(
@@ -159,18 +205,112 @@ class _CalendarScreenState extends State<CalendarScreen> {
               padding: EdgeInsets.all(30),
               child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
             )
-          else if (byDay.isEmpty)
-            _emptyAgenda(atl)
-          else
-            for (final entry in byDay.entries) ...[
-              _dayHeader(atl, entry.key),
-              const SizedBox(height: 12),
-              for (final e in entry.value) ...[
+          else ...[
+            _dayHeader(atl, _selectedDay),
+            const SizedBox(height: 12),
+            if (dayEvents.isEmpty)
+              _emptyAgenda(atl)
+            else
+              for (final e in dayEvents) ...[
                 _eventRow(atl, e),
                 const SizedBox(height: 12),
               ],
-              const SizedBox(height: 10),
-            ],
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _calendarGrid(AtlColors atl, CalendarViewModel vm) {
+    final gridDays = _daysInMonthGrid(_currentMonth);
+    const weekdays = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
+
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: atl.surface,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: atl.hairline),
+        boxShadow: atl.cardShadow,
+      ),
+      child: Column(
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceAround,
+            children: weekdays.map((day) => Expanded(
+              child: Center(
+                child: Text(
+                  day,
+                  style: atlSans(size: 13, color: atl.text3, weight: FontWeight.w600),
+                ),
+              ),
+            )).toList(),
+          ),
+          const SizedBox(height: 8),
+          GridView.builder(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: 7,
+              mainAxisSpacing: 6,
+              crossAxisSpacing: 6,
+            ),
+            itemCount: 42,
+            itemBuilder: (context, index) {
+              final day = gridDays[index];
+              final isSelected = _isSameDay(day, _selectedDay);
+              final isToday = _isSameDay(day, DateTime.now());
+              final isCurrentMonth = day.month == _currentMonth.month && day.year == _currentMonth.year;
+              final hasEvents = vm.byDay[DateTime(day.year, day.month, day.day)]?.isNotEmpty ?? false;
+
+              return GestureDetector(
+                onTap: () {
+                  setState(() {
+                    _selectedDay = day;
+                    _currentMonth = DateTime(day.year, day.month);
+                  });
+                },
+                child: Container(
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: isSelected
+                        ? atl.accent
+                        : isToday
+                            ? atl.accentSoft
+                            : Colors.transparent,
+                  ),
+                  alignment: Alignment.center,
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Text(
+                        '${day.day}',
+                        style: atlSans(
+                          size: 14,
+                          color: isSelected
+                              ? atl.accentInk
+                              : isCurrentMonth
+                                  ? atl.text
+                                  : atl.text3,
+                          weight: (isSelected || isToday) ? FontWeight.w700 : FontWeight.w500,
+                        ),
+                      ),
+                      if (hasEvents)
+                        Container(
+                          margin: const EdgeInsets.only(top: 2),
+                          width: 4,
+                          height: 4,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: isSelected ? atl.accentInk : atl.accent,
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
         ],
       ),
     );

@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 
 import '../../../data/repositories/chat_repository.dart';
@@ -17,7 +18,9 @@ class TodayViewModel extends ChangeNotifier {
     required ChatRepository chatRepository,
     required ReminderService reminderService,
   })  : _chat = chatRepository,
-        _reminders = reminderService;
+        _reminders = reminderService {
+    _reminders.addListener(notifyListeners);
+  }
 
   final ChatRepository _chat;
   final ReminderService _reminders;
@@ -70,10 +73,36 @@ class TodayViewModel extends ChangeNotifier {
     return 'in ${m}m';
   }
 
+  static const _briefingCacheKey = 'hermes.today.briefing_cache';
+  static const _eventsCacheKey = 'hermes.today.events_cache';
+
   /// Load once (on first Today open); no-op if already loaded or loading. Tab
   /// switches rebuild the screen, so this avoids re-firing the ~20s agent call.
   Future<void> loadIfNeeded() async {
     if (_loadedOnce || _loading) return;
+    _loading = true;
+    notifyListeners();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final cachedBriefing = prefs.getString(_briefingCacheKey);
+      final cachedEvents = prefs.getStringList(_eventsCacheKey);
+      if (cachedBriefing != null) {
+        _briefing = cachedBriefing;
+        if (cachedEvents != null) {
+          _events = cachedEvents.map((s) {
+            try {
+              return CalendarEvent.fromJson(jsonDecode(s) as Map<String, dynamic>);
+            } catch (_) {
+              return null;
+            }
+          }).whereType<CalendarEvent>().toList();
+        }
+        _loadedOnce = true;
+        _loading = false;
+        notifyListeners();
+      }
+    } catch (_) {}
+
     await load();
   }
 
@@ -105,6 +134,14 @@ class TodayViewModel extends ChangeNotifier {
             .map(CalendarEvent.fromAgentJson)
             .whereType<CalendarEvent>()
             .toList();
+
+        // Save to cache
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString(_briefingCacheKey, _briefing);
+        await prefs.setStringList(
+          _eventsCacheKey,
+          _events.map((e) => jsonEncode(e.toJson())).toList(),
+        );
       } else {
         // Fall back to the raw text as the briefing if JSON parsing fails.
         final text = buffer.toString().trim();
@@ -137,5 +174,11 @@ class TodayViewModel extends ChangeNotifier {
       }
     }
     return null;
+  }
+
+  @override
+  void dispose() {
+    _reminders.removeListener(notifyListeners);
+    super.dispose();
   }
 }

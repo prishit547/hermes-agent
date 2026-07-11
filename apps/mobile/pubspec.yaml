@@ -83,6 +83,7 @@ dependencies:
   # Atlantic design fonts: Hanken Grotesk (body), Instrument Serif (display),
   # JetBrains Mono (times/figures). Fetched + cached at runtime by google_fonts.
   google_fonts: ^6.2.1
+  flutter_widget_from_html: ^0.17.2
 
 dev_dependencies:
   flutter_test:

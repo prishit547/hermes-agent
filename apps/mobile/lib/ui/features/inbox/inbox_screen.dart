@@ -18,17 +18,41 @@ class InboxScreen extends StatefulWidget {
   State<InboxScreen> createState() => _InboxScreenState();
 }
 
-enum _Filter { all, email, alerts }
+enum _Filter { all, unread, read, alerts }
 
 class _InboxScreenState extends State<InboxScreen> {
   _Filter _filterSel = _Filter.all;
+  NotificationService? _notifications;
+  int _lastInboxLength = 0;
+  final TextEditingController _searchCtrl = TextEditingController();
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) context.read<EmailViewModel>().loadIfNeeded();
+      if (mounted) {
+        context.read<EmailViewModel>().loadIfNeeded();
+        _notifications = context.read<NotificationService>();
+        _lastInboxLength = _notifications?.inbox.length ?? 0;
+        _notifications?.addListener(_onNotificationsChanged);
+      }
     });
+  }
+
+  void _onNotificationsChanged() {
+    if (!mounted) return;
+    final count = _notifications?.inbox.length ?? 0;
+    if (count > _lastInboxLength) {
+      _lastInboxLength = count;
+      context.read<EmailViewModel>().load();
+    }
+  }
+
+  @override
+  void dispose() {
+    _notifications?.removeListener(_onNotificationsChanged);
+    _searchCtrl.dispose();
+    super.dispose();
   }
 
   Future<void> _refresh() => context.read<EmailViewModel>().load();
@@ -39,8 +63,8 @@ class _InboxScreenState extends State<InboxScreen> {
     final email = context.watch<EmailViewModel>();
     final alerts = context.watch<NotificationService>().inbox;
 
-    final showEmail = _filterSel != _Filter.alerts;
-    final showAlerts = _filterSel != _Filter.email;
+    final showEmail = _filterSel == _Filter.all || _filterSel == _Filter.unread || _filterSel == _Filter.read;
+    final showAlerts = _filterSel == _Filter.all || _filterSel == _Filter.alerts;
 
     return RefreshIndicator(
       onRefresh: _refresh,
@@ -51,16 +75,37 @@ class _InboxScreenState extends State<InboxScreen> {
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               Text('Inbox', style: atlSerif(size: 30, color: atl.text)),
-              if (email.unreadCount > 0)
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: atl.accentSoft,
-                    borderRadius: BorderRadius.circular(20),
-                  ),
-                  child: Text('${email.unreadCount} unread',
-                      style: atlSans(size: 12, color: atl.accent, weight: FontWeight.w600)),
-                ),
+              Row(
+                children: [
+                  if (_filterSel != _Filter.read && email.unreadCount > 0)
+                    GestureDetector(
+                      onTap: () {
+                        email.markAllRead();
+                      },
+                      child: Container(
+                         margin: const EdgeInsets.only(right: 8),
+                         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                         decoration: BoxDecoration(
+                           color: atl.accentSoft,
+                           borderRadius: BorderRadius.circular(20),
+                           border: Border.all(color: atl.accent),
+                         ),
+                         child: Text('Mark all read',
+                             style: atlSans(size: 12, color: atl.accent, weight: FontWeight.w600)),
+                      ),
+                    ),
+                  if (email.unreadCount > 0)
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: atl.surface2,
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: Text('${email.unreadCount} unread',
+                          style: atlSans(size: 12, color: atl.text2, weight: FontWeight.w600)),
+                    ),
+                ],
+              ),
             ],
           ),
           const SizedBox(height: 14),
@@ -68,12 +113,59 @@ class _InboxScreenState extends State<InboxScreen> {
             children: [
               _filterChip(atl, 'All', _Filter.all),
               const SizedBox(width: 8),
-              _filterChip(atl, 'Email', _Filter.email),
+              _filterChip(atl, 'Unread Mails', _Filter.unread),
+              const SizedBox(width: 8),
+              _filterChip(atl, 'Read Mails', _Filter.read),
               const SizedBox(width: 8),
               _filterChip(atl, 'Alerts', _Filter.alerts),
             ],
           ),
           const SizedBox(height: 20),
+
+          // Search Bar
+          if (showEmail && !email.notConnected) ...[
+            Container(
+              margin: const EdgeInsets.only(bottom: 16),
+              decoration: BoxDecoration(
+                color: atl.surface,
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: atl.hairline),
+              ),
+              padding: const EdgeInsets.symmetric(horizontal: 14),
+              child: Row(
+                children: [
+                  Icon(Icons.search, size: 20, color: atl.text3),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: TextField(
+                      controller: _searchCtrl,
+                      style: atlSans(size: 14, color: atl.text),
+                      decoration: InputDecoration(
+                        hintText: _filterSel == _Filter.read ? 'Search read email...' : 'Search unread email...',
+                        hintStyle: atlSans(size: 14, color: atl.text3),
+                        border: InputBorder.none,
+                        isDense: true,
+                        contentPadding: const EdgeInsets.symmetric(vertical: 12),
+                      ),
+                      onChanged: (val) {
+                        setState(() {});
+                        context.read<EmailViewModel>().setSearchQuery(val);
+                      },
+                    ),
+                  ),
+                  if (_searchCtrl.text.isNotEmpty)
+                    GestureDetector(
+                      onTap: () {
+                        _searchCtrl.clear();
+                        setState(() {});
+                        context.read<EmailViewModel>().setSearchQuery('');
+                      },
+                      child: Icon(Icons.clear, size: 18, color: atl.text2),
+                    ),
+                ],
+              ),
+            ),
+          ],
 
           // Email section
           if (showEmail) ...[
@@ -85,7 +177,11 @@ class _InboxScreenState extends State<InboxScreen> {
             else if (email.notConnected)
               _connectEmailCard(atl)
             else if (email.messages.isNotEmpty) ...[
-              _label(atl, 'Email'),
+              _label(atl, _filterSel == _Filter.read
+                  ? 'Read Mails'
+                  : _filterSel == _Filter.unread
+                      ? 'Unread Mails'
+                      : 'All Mails'),
               for (final m in email.messages)
                 FadeInUp(
                   key: ValueKey(m.id),
@@ -93,8 +189,10 @@ class _InboxScreenState extends State<InboxScreen> {
                   child: _emailCard(atl, m),
                 ),
               const SizedBox(height: 8),
-            ] else if (_filterSel == _Filter.email)
-              _emptyHint(atl, 'No unread email. You’re all caught up.'),
+            ] else if (_filterSel == _Filter.unread)
+              _emptyHint(atl, 'No unread email. You’re all caught up.')
+            else if (_filterSel == _Filter.read)
+              _emptyHint(atl, 'No read email found.'),
           ],
 
           // Alerts section (ntfy activity)
@@ -113,7 +211,23 @@ class _InboxScreenState extends State<InboxScreen> {
   Widget _filterChip(AtlColors atl, String label, _Filter value) {
     final active = _filterSel == value;
     return GestureDetector(
-      onTap: () => setState(() => _filterSel = value),
+      onTap: () {
+        if (_filterSel != value) {
+          setState(() {
+            _filterSel = value;
+            _searchCtrl.clear();
+          });
+          final emailVM = context.read<EmailViewModel>();
+          emailVM.setSearchQuery('');
+          if (value == _Filter.all) {
+            emailVM.setTabIndex(0);
+          } else if (value == _Filter.unread) {
+            emailVM.setTabIndex(1);
+          } else if (value == _Filter.read) {
+            emailVM.setTabIndex(2);
+          }
+        }
+      },
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
         decoration: BoxDecoration(

@@ -6,6 +6,11 @@ class EmailAddress {
 
   String get display => name.isNotEmpty ? name : email;
 
+  Map<String, dynamic> toJson() => {
+        'name': name,
+        'email': email,
+      };
+
   factory EmailAddress.fromJson(dynamic json) {
     if (json is Map<String, dynamic>) {
       return EmailAddress(
@@ -45,6 +50,19 @@ class EmailMessage {
   final String? messageIdHeader;
 
   String get subjectOrNoSubject => subject.trim().isEmpty ? '(no subject)' : subject;
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'thread_id': threadId,
+        'from': from.toJson(),
+        'subject': subject,
+        'snippet': snippet,
+        'date': date,
+        'unread': unread,
+        'to': to,
+        'body': body,
+        'message_id_header': messageIdHeader,
+      };
 
   factory EmailMessage.fromJson(Map<String, dynamic> json) => EmailMessage(
         id: (json['id'] ?? '').toString(),

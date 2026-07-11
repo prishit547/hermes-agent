@@ -33,4 +33,20 @@ class CalendarEvent {
           : null,
     );
   }
+
+  Map<String, dynamic> toJson() => {
+        'title': title,
+        'start': start.toIso8601String(),
+        'end': end?.toIso8601String(),
+        'kind': kind.index,
+        'subtitle': subtitle,
+      };
+
+  factory CalendarEvent.fromJson(Map<String, dynamic> json) => CalendarEvent(
+        title: (json['title'] ?? '').toString(),
+        start: DateTime.parse(json['start'] as String),
+        end: json['end'] != null ? DateTime.parse(json['end'] as String) : null,
+        kind: CalendarKind.values[json['kind'] as int],
+        subtitle: json['subtitle'] as String?,
+      );
 }

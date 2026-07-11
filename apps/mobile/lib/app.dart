@@ -1,13 +1,17 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import 'data/repositories/calendar_repository.dart';
 import 'data/repositories/chat_repository.dart';
+import 'data/repositories/email_repository.dart';
 import 'data/repositories/jobs_repository.dart';
+import 'data/repositories/music_repository.dart';
 import 'data/repositories/session_repository.dart';
 import 'data/repositories/settings_repository.dart';
 import 'data/repositories/system_repository.dart';
 import 'data/services/audio_service.dart';
 import 'data/services/hermes_api_client.dart';
+import 'data/services/music_player_service.dart';
 import 'data/services/notification_service.dart';
 import 'data/services/reminder_service.dart';
 import 'data/services/voice_stream_service.dart';
@@ -16,6 +20,9 @@ import 'ui/core/theme_controller.dart';
 import 'ui/features/calendar/calendar_view_model.dart';
 import 'ui/features/chat/view_models/chat_view_model.dart';
 import 'ui/features/chat/view_models/session_list_view_model.dart';
+import 'ui/features/email/email_view_model.dart';
+import 'ui/features/music/music_view_model.dart';
+import 'ui/features/today/today_view_model.dart';
 import 'ui/features/settings/view_models/settings_view_model.dart';
 import 'ui/features/settings/views/settings_screen.dart';
 import 'ui/features/shell/home_shell.dart';
@@ -60,6 +67,19 @@ class HermesApp extends StatelessWidget {
       settingsRepository: settingsRepository,
     );
     final voiceStreamService = VoiceStreamService(settingsRepository);
+    final emailRepository = EmailRepository(
+      apiClient: apiClient,
+      settingsRepository: settingsRepository,
+    );
+    final calendarRepository = CalendarRepository(
+      apiClient: apiClient,
+      settingsRepository: settingsRepository,
+    );
+    final musicPlayerService = MusicPlayerService();
+    final musicRepository = MusicRepository(
+      apiClient: apiClient,
+      settingsRepository: settingsRepository,
+    );
 
     return MultiProvider(
       providers: [
@@ -73,6 +93,8 @@ class HermesApp extends StatelessWidget {
         Provider.value(value: jobsRepository),
         Provider.value(value: audioService),
         Provider.value(value: voiceStreamService),
+        Provider.value(value: emailRepository),
+        Provider.value(value: musicRepository),
         ChangeNotifierProvider(create: (_) => ShellController()),
         ChangeNotifierProvider(
           create: (_) => ChatViewModel(
@@ -86,9 +108,23 @@ class HermesApp extends StatelessWidget {
         ),
         ChangeNotifierProvider(
           create: (_) => CalendarViewModel(
+            calendarRepository: calendarRepository,
             chatRepository: chatRepository,
             reminderService: reminderService,
             jobsRepository: jobsRepository,
+          ),
+        ),
+        ChangeNotifierProvider(
+          create: (_) => TodayViewModel(
+            chatRepository: chatRepository,
+            reminderService: reminderService,
+          ),
+        ),
+        ChangeNotifierProvider(create: (_) => EmailViewModel(emailRepository)),
+        ChangeNotifierProvider(
+          create: (_) => MusicViewModel(
+            repository: musicRepository,
+            playerService: musicPlayerService,
           ),
         ),
         ChangeNotifierProvider(

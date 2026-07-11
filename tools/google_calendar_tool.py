@@ -142,6 +142,46 @@ def _plus_days_iso(days: int) -> str:
     return (datetime.now(timezone.utc) + timedelta(days=days)).isoformat()
 
 
+def _local_offset() -> str:
+    """Current local UTC offset formatted as '+05:30' / '-08:00' (or 'Z')."""
+    from datetime import datetime
+
+    off = datetime.now().astimezone().utcoffset()
+    if not off:
+        return "Z"
+    total = int(off.total_seconds())
+    sign = "+" if total >= 0 else "-"
+    total = abs(total)
+    return f"{sign}{total // 3600:02d}:{(total % 3600) // 60:02d}"
+
+
+def _normalize_rfc3339(value: str) -> str:
+    """Coerce a time-bound string into RFC3339 with a timezone.
+
+    The Calendar API's timeMin/timeMax REQUIRE a timezone; the model often
+    passes a naive datetime ('2026-07-11T00:00:00') or a bare date, which Google
+    rejects with 400. When the model says "the 15th" it means the 15th in the
+    user's *local* wall-clock (which matches their calendar's timezone), NOT UTC —
+    stamping these as 'Z' shifts the day boundary and drops events that sit in the
+    local day but a different UTC day (e.g. a 01:30 IST event is 20:00 UTC the day
+    before). So bare date → start-of-day at the local offset; naive datetime →
+    append the local offset. Anything already carrying 'Z' or a ±hh:mm offset is
+    left untouched.
+    """
+    v = (value or "").strip()
+    if not v:
+        return v
+    if "T" not in v and len(v) == 10:  # bare date
+        return f"{v}T00:00:00{_local_offset()}"
+    if v.endswith("Z"):
+        return v
+    # Detect an existing offset in the time portion (e.g. +05:30 / -08:00).
+    time_part = v.split("T", 1)[-1]
+    if "+" in time_part or "-" in time_part:
+        return v
+    return f"{v}{_local_offset()}"
+
+
 def _time_field(value: str, timezone_name: Optional[str]) -> dict:
     """Build a Calendar API start/end object from an ISO string.
 
@@ -232,8 +272,8 @@ def _handle(args: dict) -> str:
             return json.dumps({"calendars": calendars})
 
         if action == "list_events":
-            time_min = (args.get("time_min") or _now_iso()).strip()
-            time_max = (args.get("time_max") or _plus_days_iso(7)).strip()
+            time_min = _normalize_rfc3339((args.get("time_min") or _now_iso()).strip())
+            time_max = _normalize_rfc3339((args.get("time_max") or _plus_days_iso(7)).strip())
             max_results = int(args.get("max_results") or DEFAULT_MAX_RESULTS)
             request = service.events().list(
                 calendarId=calendar_id,

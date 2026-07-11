@@ -265,6 +265,11 @@ youtube = [
   # Without this declaration uv sync omits the package and both skills fail
   # at first invocation with ModuleNotFoundError (issue #22243).
   "youtube-transcript-api==1.2.4",
+  # yt-dlp powers the `music` streaming tool + the /music/stream audio proxy
+  # (search + best-audio resolution). Also lazy-installed via LAZY_DEPS
+  # ("music.youtube") so plain installs don't carry it until music is used;
+  # declared here so packagers ship it with the [all] extra.
+  "yt-dlp>=2025.6.9",
 ]
 # `hermes dashboard` (localhost SPA + API).  Not in core to keep the default install lean.
 # starlette==1.0.1 pinned for CVE-2026-48710 (BadHost) — fastapi pulls Starlette

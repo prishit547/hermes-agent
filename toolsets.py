@@ -67,6 +67,10 @@ _HERMES_CORE_TOOLS = [
     "cronjob",
     # Google Calendar (gated on OAuth config/authorization via check_fn)
     "google_calendar",
+    # Gmail (gated on OAuth config/authorization via check_fn)
+    "gmail",
+    # Music streaming (YouTube via yt-dlp; gated on yt-dlp availability via check_fn)
+    "music",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
     # Kanban multi-agent coordination — only in schema when the agent is
@@ -192,6 +196,18 @@ TOOLSETS = {
     "google_calendar": {
         "description": "Google Calendar: list/create/update/delete events, natural-language quick-add, list calendars",
         "tools": ["google_calendar"],
+        "includes": []
+    },
+
+    "gmail": {
+        "description": "Gmail: list/read messages, send/reply/draft email, mark read",
+        "tools": ["gmail"],
+        "includes": []
+    },
+
+    "music": {
+        "description": "YouTube music: play/search/enqueue/recommend, transport controls, likes, playlists",
+        "tools": ["music"],
         "includes": []
     },
 

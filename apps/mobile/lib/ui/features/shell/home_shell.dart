@@ -7,6 +7,7 @@ import '../../core/atl_theme.dart';
 import '../calendar/calendar_screen.dart';
 import '../chat/views/chat_screen.dart';
 import '../inbox/inbox_screen.dart';
+import '../music/mini_player.dart';
 import '../today/today_screen.dart';
 import '../voice/voice_overlay.dart';
 import 'shell_controller.dart';
@@ -60,7 +61,12 @@ class HomeShell extends StatelessWidget {
             if (shell.voiceOpen) const Positioned.fill(child: VoiceOverlay()),
           ],
         ),
-        bottomNavigationBar: shell.voiceOpen ? null : const _AtlTabBar(),
+        bottomNavigationBar: shell.voiceOpen
+            ? null
+            : const Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [MiniPlayer(), _AtlTabBar()],
+              ),
       ),
     );
   }

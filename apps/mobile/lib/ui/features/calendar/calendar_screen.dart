@@ -32,8 +32,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
     super.initState();
     final vm = context.read<CalendarViewModel>();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      vm.load();
-      vm.loadTasks();
+      vm.loadIfNeeded();
     });
   }
 
@@ -269,28 +268,38 @@ class _CalendarScreenState extends State<CalendarScreen> {
         const SizedBox(width: 13),
         Expanded(
           child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 13),
             decoration: BoxDecoration(
               color: atl.surface,
               borderRadius: BorderRadius.circular(14),
-              border: Border(
-                left: BorderSide(color: color, width: 3),
-                top: BorderSide(color: atl.hairline),
-                right: BorderSide(color: atl.hairline),
-                bottom: BorderSide(color: atl.hairline),
-              ),
+              border: Border.all(color: atl.hairline),
               boxShadow: atl.cardShadow,
             ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(e.title,
-                    style: atlSans(size: 15, color: atl.text, weight: FontWeight.w600)),
-                if (e.subtitle != null) ...[
-                  const SizedBox(height: 3),
-                  Text(e.subtitle!, style: atlSans(size: 13, color: atl.text2)),
-                ],
-              ],
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(14),
+              child: IntrinsicHeight(
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Container(width: 3, color: color),
+                    Expanded(
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 13),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(e.title,
+                                style: atlSans(size: 15, color: atl.text, weight: FontWeight.w600)),
+                            if (e.subtitle != null) ...[
+                              const SizedBox(height: 3),
+                              Text(e.subtitle!, style: atlSans(size: 13, color: atl.text2)),
+                            ],
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             ),
           ),
         ),

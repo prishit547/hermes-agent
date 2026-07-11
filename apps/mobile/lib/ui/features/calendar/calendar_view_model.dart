@@ -1,38 +1,45 @@
-import 'dart:convert';
-
 import 'package:flutter/foundation.dart';
 import 'package:uuid/uuid.dart';
 
+import '../../../data/repositories/calendar_repository.dart';
 import '../../../data/repositories/chat_repository.dart';
 import '../../../data/repositories/jobs_repository.dart';
+import '../../../data/services/hermes_api_client.dart';
 import '../../../data/services/reminder_service.dart';
 import '../../../domain/models/calendar_event.dart';
 import '../../../domain/models/message.dart';
 
-/// Whether Google Calendar is reachable through the agent.
+/// Whether Google Calendar is reachable.
 enum GoogleCalState { unknown, connected, notConnected, error }
 
 /// Drives the calendar. Aggregates three sources into one agenda:
 /// • On-device alarms ([ReminderService]) — always available.
 /// • Server agent tasks ([JobsRepository]) — their next run time.
-/// • Google Calendar events — fetched by asking the agent (which calls the
-///   `google_calendar` tool). Per the chosen design, the calendar is driven
-///   through the agent rather than a dedicated REST endpoint.
+/// • Google Calendar events — read via the FAST `/api/calendar/events` endpoint
+///   ([CalendarRepository]); natural-language *adding* still uses the agent.
+///
+/// Results are cached (loaded once via [loadIfNeeded]); pull-to-refresh calls
+/// [load]. This is why the calendar no longer re-loads on every tab switch.
 class CalendarViewModel extends ChangeNotifier {
   CalendarViewModel({
+    required CalendarRepository calendarRepository,
     required ChatRepository chatRepository,
     required ReminderService reminderService,
     required JobsRepository jobsRepository,
-  })  : _chat = chatRepository,
+  })  : _calendar = calendarRepository,
+        _chat = chatRepository,
         _reminders = reminderService,
         _jobs = jobsRepository;
 
+  final CalendarRepository _calendar;
   final ChatRepository _chat;
   final ReminderService _reminders;
   final JobsRepository _jobs;
 
   // A stable, dedicated session so calendar chatter stays out of the main chat.
   final String _sessionId = 'calendar-${const Uuid().v4()}';
+
+  bool _loadedOnce = false;
 
   bool _loading = false;
   bool get loading => _loading;
@@ -57,8 +64,17 @@ class CalendarViewModel extends ChangeNotifier {
     return {for (final k in sortedKeys) k: (map[k]!..sort((a, b) => a.start.compareTo(b.start)))};
   }
 
-  /// Reload everything: local sources immediately, then Google via the agent.
+  /// Load once (cached). Tab switches rebuild the screen, so this avoids
+  /// re-fetching on every open. Also loads server tasks.
+  Future<void> loadIfNeeded() async {
+    if (_loadedOnce || _loading) return;
+    await load();
+    await loadTasks();
+  }
+
+  /// Reload everything: local sources immediately, then Google events (fast REST).
   Future<void> load() async {
+    _loadedOnce = true;
     _loading = true;
     _error = null;
     notifyListeners();
@@ -113,38 +129,20 @@ class CalendarViewModel extends ChangeNotifier {
     }
   }
 
-  /// Ask the agent to enumerate Google Calendar events as JSON we can parse.
+  /// Fetch Google Calendar events via the fast structured endpoint (~1s).
   Future<List<CalendarEvent>> _fetchGoogleEvents() async {
-    const prompt =
-        'Using the google_calendar tool, list my calendar events from now through the next 14 days. '
-        'Respond with ONLY a compact JSON object, no prose, no code fences, of the form '
-        '{"connected": true, "events": [{"title": str, "start": ISO8601, "end": ISO8601 or null, "location": str or null}]}. '
-        'If Google Calendar is not connected or not authorized, respond with exactly {"connected": false}.';
-
-    final buffer = StringBuffer();
-    await for (final delta in _chat.streamReply(
-      history: [Message(role: MessageRole.user, content: prompt)],
-      sessionId: _sessionId,
-    )) {
-      buffer.write(delta);
-    }
-    final obj = _extractJsonObject(buffer.toString());
-    if (obj == null) {
-      _google = GoogleCalState.notConnected;
+    try {
+      final events = await _calendar.listEvents(days: 14);
+      _google = GoogleCalState.connected;
+      return events;
+    } on HermesApiException catch (e) {
+      if (e.statusCode == 503 || e.message.toLowerCase().contains('not connected')) {
+        _google = GoogleCalState.notConnected;
+      } else {
+        _google = GoogleCalState.error;
+      }
       return const [];
     }
-    if (obj['connected'] == false) {
-      _google = GoogleCalState.notConnected;
-      return const [];
-    }
-    final rawEvents = (obj['events'] as List<dynamic>? ?? const []);
-    final events = rawEvents
-        .whereType<Map<String, dynamic>>()
-        .map(CalendarEvent.fromAgentJson)
-        .whereType<CalendarEvent>()
-        .toList();
-    _google = GoogleCalState.connected;
-    return events;
   }
 
   /// Create an event from natural language by sending it to the agent, then
@@ -175,26 +173,4 @@ class CalendarViewModel extends ChangeNotifier {
     }
   }
 
-  /// Extract the first balanced `{...}` JSON object from arbitrary agent text
-  /// (handles code fences and surrounding prose).
-  Map<String, dynamic>? _extractJsonObject(String text) {
-    final start = text.indexOf('{');
-    if (start == -1) return null;
-    var depth = 0;
-    for (var i = start; i < text.length; i++) {
-      final ch = text[i];
-      if (ch == '{') depth++;
-      if (ch == '}') {
-        depth--;
-        if (depth == 0) {
-          try {
-            return jsonDecode(text.substring(start, i + 1)) as Map<String, dynamic>;
-          } catch (_) {
-            return null;
-          }
-        }
-      }
-    }
-    return null;
-  }
 }

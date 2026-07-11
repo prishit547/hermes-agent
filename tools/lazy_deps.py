@@ -144,6 +144,12 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "google-auth-oauthlib==1.2.1",
     ),
 
+    # ─── Music streaming (YouTube via yt-dlp) ──────────────────────────────
+    # Powers the `music` tool + the gateway's /music/stream audio proxy. yt-dlp
+    # scrapes YouTube directly (no API key). Opt-in: only installed the first
+    # time the user actually plays music.
+    "music.youtube": ("yt-dlp>=2025.6.9",),
+
     # ─── Image generation backends ─────────────────────────────────────────
     "image.fal": ("fal-client==0.13.1",),
 

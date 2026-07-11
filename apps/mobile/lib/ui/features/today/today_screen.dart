@@ -3,20 +3,17 @@ import 'package:provider/provider.dart';
 
 import '../../../data/repositories/chat_repository.dart';
 import '../../../data/repositories/settings_repository.dart';
+import '../../../domain/models/calendar_event.dart';
+import '../../../domain/models/local_reminder.dart';
 import '../../core/animations.dart';
 import '../../core/atl_theme.dart';
+import '../music/music_screen.dart';
 import '../reminders/reminders_screen.dart';
 import '../settings/views/settings_screen.dart';
 import '../shell/shell_controller.dart';
+import 'today_view_model.dart';
 
 const kAssistantName = 'Atlantic';
-
-class _Task {
-  _Task(this.title, this.time, this.done);
-  final String title;
-  final String time;
-  bool done;
-}
 
 class TodayScreen extends StatefulWidget {
   const TodayScreen({super.key});
@@ -26,24 +23,29 @@ class TodayScreen extends StatefulWidget {
 }
 
 class _TodayScreenState extends State<TodayScreen> {
-  final _tasks = [
-    _Task('Pick up prescription', '5:00', false),
-    _Task('Reply to Alex', '', false),
-    _Task('Book flights for SF', '', true),
-  ];
-
   bool? _connected;
 
   @override
   void initState() {
     super.initState();
     _ping();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) context.read<TodayViewModel>().loadIfNeeded();
+    });
   }
 
   Future<void> _ping() async {
     final connected = await context.read<ChatRepository>().ping();
     if (mounted) setState(() => _connected = connected);
   }
+
+  Color _dotFor(CalendarKind kind) => switch (kind) {
+        CalendarKind.event => AtlColors.eventBlue,
+        CalendarKind.task => AtlColors.eventGold,
+        CalendarKind.alarm => AtlColors.eventPink,
+      };
+
+  String _fmtTime(DateTime t) => TimeOfDay.fromDateTime(t).format(context);
 
   String get _greeting {
     final h = DateTime.now().hour;
@@ -66,11 +68,17 @@ class _TodayScreenState extends State<TodayScreen> {
   Widget build(BuildContext context) {
     final atl = context.atl;
     final shell = context.read<ShellController>();
+    final vm = context.watch<TodayViewModel>();
     final serverName = _serverLabel(context);
+    final name = context.watch<SettingsRepository>().current.userName.trim();
+    final avatarLetter =
+        name.isNotEmpty ? name[0].toUpperCase() : kAssistantName[0];
 
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(21, 6, 21, 24),
-      children: [
+    return RefreshIndicator(
+      onRefresh: () => context.read<TodayViewModel>().load(),
+      child: ListView(
+        padding: const EdgeInsets.fromLTRB(21, 6, 21, 24),
+        children: [
         // Header
         Row(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -88,11 +96,14 @@ class _TodayScreenState extends State<TodayScreen> {
                   const SizedBox(height: 6),
                   RichText(
                     text: TextSpan(children: [
-                      TextSpan(text: '$_greeting\n', style: atlSerif(size: 38, color: atl.text)),
                       TextSpan(
-                        text: 'Rishit',
-                        style: atlSerif(size: 38, color: atl.accent, style: FontStyle.italic),
-                      ),
+                          text: name.isEmpty ? _greeting.replaceAll(',', '') : '$_greeting\n',
+                          style: atlSerif(size: 38, color: atl.text)),
+                      if (name.isNotEmpty)
+                        TextSpan(
+                          text: name,
+                          style: atlSerif(size: 38, color: atl.accent, style: FontStyle.italic),
+                        ),
                     ]),
                   ),
                 ],
@@ -116,7 +127,7 @@ class _TodayScreenState extends State<TodayScreen> {
                   ),
                 ),
                 alignment: Alignment.center,
-                child: Text('R',
+                child: Text(avatarLetter,
                     style: atlSans(size: 15, color: const Color(0xFF0A0A14), weight: FontWeight.w600)),
               ),
             ),
@@ -153,62 +164,74 @@ class _TodayScreenState extends State<TodayScreen> {
         const SizedBox(height: 18),
 
         // Daily briefing
-        FadeInUp(delay: const Duration(milliseconds: 90), child: _BriefingCard(atl: atl)),
+        FadeInUp(
+            delay: const Duration(milliseconds: 90),
+            child: _BriefingCard(atl: atl, text: vm.briefing, loading: vm.loading)),
         const SizedBox(height: 17),
 
-        // Up next
-        FadeInUp(
-          delay: const Duration(milliseconds: 140),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              _sectionRow(atl, 'Up next', trailing: 'in 3h 20m'),
-              const SizedBox(height: 11),
-              _card(
-                atl,
-                padding: EdgeInsets.zero,
-                child: Column(
-                  children: [
-                    _eventRow(atl, AtlColors.eventPink, 'Dentist appointment',
-                        'Downtown Dental · 8 min away', '2:00'),
-                    Divider(height: 1, color: atl.divider, indent: 15, endIndent: 15),
-                    _eventRow(atl, AtlColors.eventGold, 'Call with Sam',
-                        'Product sync · Google Meet', '4:00'),
-                  ],
+        // Up next — real calendar events for today
+        if (vm.loading || vm.upNext.isNotEmpty)
+          FadeInUp(
+            delay: const Duration(milliseconds: 140),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _sectionRow(atl, 'Up next', trailing: vm.nextInLabel),
+                const SizedBox(height: 11),
+                _card(
+                  atl,
+                  padding: EdgeInsets.zero,
+                  child: vm.loading && vm.upNext.isEmpty
+                      ? _skeletonRow(atl)
+                      : Column(
+                          children: [
+                            for (var i = 0; i < vm.upNext.length; i++) ...[
+                              if (i > 0)
+                                Divider(height: 1, color: atl.divider, indent: 15, endIndent: 15),
+                              _eventRow(
+                                atl,
+                                _dotFor(vm.upNext[i].kind),
+                                vm.upNext[i].title,
+                                vm.upNext[i].subtitle ?? '',
+                                _fmtTime(vm.upNext[i].start),
+                              ),
+                            ],
+                          ],
+                        ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
-        ),
-        const SizedBox(height: 17),
+        if (vm.loading || vm.upNext.isNotEmpty) const SizedBox(height: 17),
 
-        // Tasks
-        FadeInUp(
-          delay: const Duration(milliseconds: 190),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('Due today · tap to check',
-                  style: atlSans(
-                      size: 12,
-                      color: atl.text2,
-                      weight: FontWeight.w600,
-                      letterSpacing: 1)),
-              const SizedBox(height: 11),
-              _card(
-                atl,
-                padding: EdgeInsets.zero,
-                child: Column(
-                  children: [
-                    for (var i = 0; i < _tasks.length; i++)
-                      _taskRow(atl, _tasks[i], i),
-                  ],
+        // Due today — real on-device reminders
+        if (vm.dueToday.isNotEmpty)
+          FadeInUp(
+            delay: const Duration(milliseconds: 190),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Due today · reminders',
+                    style: atlSans(
+                        size: 12,
+                        color: atl.text2,
+                        weight: FontWeight.w600,
+                        letterSpacing: 1)),
+                const SizedBox(height: 11),
+                _card(
+                  atl,
+                  padding: EdgeInsets.zero,
+                  child: Column(
+                    children: [
+                      for (var i = 0; i < vm.dueToday.length; i++)
+                        _reminderRow(atl, vm.dueToday[i], i == vm.dueToday.length - 1),
+                    ],
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
-        ),
-        const SizedBox(height: 17),
+        if (vm.dueToday.isNotEmpty) const SizedBox(height: 17),
 
         // Quick actions
         FadeInUp(
@@ -221,10 +244,16 @@ class _TodayScreenState extends State<TodayScreen> {
               _chip(atl, Icons.mic_none, 'Voice memo', shell.openVoice),
               _chip(atl, Icons.calendar_today_outlined, 'Add event',
                   () => shell.go(AtlTab.calendar)),
+              _chip(atl, Icons.music_note_outlined, 'Music', () {
+                Navigator.of(context).push(
+                  MaterialPageRoute(builder: (_) => const MusicScreen()),
+                );
+              }),
             ],
           ),
         ),
       ],
+      ),
     );
   }
 
@@ -297,44 +326,34 @@ class _TodayScreenState extends State<TodayScreen> {
         ),
       );
 
-  Widget _taskRow(AtlColors atl, _Task task, int i) => Pressable(
-        onTap: () => setState(() => task.done = !task.done),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 14),
-          decoration: BoxDecoration(
-            border: Border(
-              bottom: i == _tasks.length - 1
-                  ? BorderSide.none
-                  : BorderSide(color: atl.divider),
+  Widget _reminderRow(AtlColors atl, LocalReminder r, bool last) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 14),
+        decoration: BoxDecoration(
+          border: Border(
+            bottom: last ? BorderSide.none : BorderSide(color: atl.divider),
+          ),
+        ),
+        child: Row(
+          children: [
+            Icon(Icons.notifications_none, size: 20, color: atl.accent),
+            const SizedBox(width: 13),
+            Expanded(
+              child: Text(r.title, style: atlSans(size: 15, color: atl.text)),
             ),
-          ),
-          child: Row(
-            children: [
-              AnimatedContainer(
-                duration: const Duration(milliseconds: 150),
-                width: 22,
-                height: 22,
-                decoration: BoxDecoration(
-                  color: task.done ? atl.accent : Colors.transparent,
-                  borderRadius: BorderRadius.circular(8),
-                  border: task.done ? null : Border.all(color: atl.text3, width: 1.6),
-                ),
-                child: task.done
-                    ? Icon(Icons.check, size: 13, color: atl.accentInk)
-                    : null,
-              ),
-              const SizedBox(width: 13),
-              Expanded(
-                child: Text(task.title,
-                    style: atlSans(
-                        size: 15,
-                        color: task.done ? atl.text3 : atl.text,
-                        decoration: task.done ? TextDecoration.lineThrough : null)),
-              ),
-              if (task.time.isNotEmpty)
-                Text(task.time, style: atlMono(size: 12, color: atl.text3)),
-            ],
-          ),
+            Text(_fmtTime(r.time), style: atlMono(size: 12, color: atl.text3)),
+          ],
+        ),
+      );
+
+  Widget _skeletonRow(AtlColors atl) => Padding(
+        padding: const EdgeInsets.all(15),
+        child: Row(
+          children: [
+            const SizedBox(
+                width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
+            const SizedBox(width: 13),
+            Text('Loading your day…', style: atlSans(size: 14, color: atl.text3)),
+          ],
         ),
       );
 
@@ -403,8 +422,10 @@ class _ConnectionPill extends StatelessWidget {
 }
 
 class _BriefingCard extends StatelessWidget {
-  const _BriefingCard({required this.atl});
+  const _BriefingCard({required this.atl, required this.text, required this.loading});
   final AtlColors atl;
+  final String text;
+  final bool loading;
 
   @override
   Widget build(BuildContext context) {
@@ -454,11 +475,23 @@ class _BriefingCard extends StatelessWidget {
                   ],
                 ),
                 const SizedBox(height: 11),
-                Text(
-                  "Clear skies, 72°. Three events, two tasks. Afternoon's busy — "
-                  "dentist at 2, then Sam at 4. Your morning is free if you'd like to write.",
-                  style: atlSans(size: 14, color: atl.text2, height: 1.6),
-                ),
+                if (loading && text.isEmpty)
+                  Row(
+                    children: [
+                      const SizedBox(
+                          width: 15, height: 15, child: CircularProgressIndicator(strokeWidth: 2)),
+                      const SizedBox(width: 10),
+                      Text('Preparing your briefing…',
+                          style: atlSans(size: 14, color: atl.text3)),
+                    ],
+                  )
+                else
+                  Text(
+                    text.isEmpty
+                        ? 'Pull to refresh for your daily briefing.'
+                        : text,
+                    style: atlSans(size: 14, color: atl.text2, height: 1.6),
+                  ),
               ],
             ),
           ),

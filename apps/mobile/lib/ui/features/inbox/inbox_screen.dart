@@ -2,81 +2,119 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../../data/services/notification_service.dart';
+import '../../../domain/models/email_message.dart';
+import '../../core/animations.dart';
 import '../../core/atl_theme.dart';
+import '../email/email_detail_screen.dart';
+import '../email/email_view_model.dart';
 
-/// Unified feed: live ntfy pushes plus sample activity items. Reads
-/// [NotificationService.inbox] so real reminders/briefings appear as they land.
-class InboxScreen extends StatelessWidget {
+/// Unified inbox: unread email (tap → read + AI reply) plus live activity
+/// (ntfy pushes: reminders, new-mail alerts, briefings). The filter chips are
+/// functional and the whole feed pull-to-refreshes.
+class InboxScreen extends StatefulWidget {
   const InboxScreen({super.key});
+
+  @override
+  State<InboxScreen> createState() => _InboxScreenState();
+}
+
+enum _Filter { all, email, alerts }
+
+class _InboxScreenState extends State<InboxScreen> {
+  _Filter _filterSel = _Filter.all;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) context.read<EmailViewModel>().loadIfNeeded();
+    });
+  }
+
+  Future<void> _refresh() => context.read<EmailViewModel>().load();
 
   @override
   Widget build(BuildContext context) {
     final atl = context.atl;
-    final notifications = context.watch<NotificationService>().inbox;
+    final email = context.watch<EmailViewModel>();
+    final alerts = context.watch<NotificationService>().inbox;
 
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(20, 4, 20, 24),
-      children: [
-        Text('Inbox', style: atlSerif(size: 30, color: atl.text)),
-        const SizedBox(height: 14),
-        Row(
-          children: [
-            _filter(atl, 'All', active: true),
-            const SizedBox(width: 8),
-            _filter(atl, 'Actionable'),
-            const SizedBox(width: 8),
-            _filter(atl, 'Activity'),
+    final showEmail = _filterSel != _Filter.alerts;
+    final showAlerts = _filterSel != _Filter.email;
+
+    return RefreshIndicator(
+      onRefresh: _refresh,
+      child: ListView(
+        padding: const EdgeInsets.fromLTRB(20, 4, 20, 24),
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text('Inbox', style: atlSerif(size: 30, color: atl.text)),
+              if (email.unreadCount > 0)
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: atl.accentSoft,
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Text('${email.unreadCount} unread',
+                      style: atlSans(size: 12, color: atl.accent, weight: FontWeight.w600)),
+                ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          Row(
+            children: [
+              _filterChip(atl, 'All', _Filter.all),
+              const SizedBox(width: 8),
+              _filterChip(atl, 'Email', _Filter.email),
+              const SizedBox(width: 8),
+              _filterChip(atl, 'Alerts', _Filter.alerts),
+            ],
+          ),
+          const SizedBox(height: 20),
+
+          // Email section
+          if (showEmail) ...[
+            if (email.loading && email.messages.isEmpty)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 20),
+                child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
+              )
+            else if (email.notConnected)
+              _connectEmailCard(atl)
+            else if (email.messages.isNotEmpty) ...[
+              _label(atl, 'Email'),
+              for (final m in email.messages)
+                FadeInUp(
+                  key: ValueKey(m.id),
+                  duration: const Duration(milliseconds: 260),
+                  child: _emailCard(atl, m),
+                ),
+              const SizedBox(height: 8),
+            ] else if (_filterSel == _Filter.email)
+              _emptyHint(atl, 'No unread email. You’re all caught up.'),
           ],
-        ),
-        const SizedBox(height: 20),
 
-        if (notifications.isNotEmpty) ...[
-          _label(atl, 'Today'),
-          for (final n in notifications)
-            _card(
-              atl,
-              icon: Icons.notifications_none,
-              iconColor: atl.accent,
-              iconBg: atl.accentSoft,
-              title: n.title,
-              body: n.message,
-              unread: true,
-            ),
-          const SizedBox(height: 8),
-        ] else ...[
-          _label(atl, 'Today'),
-          _actionableCard(atl),
-          _card(
-            atl,
-            icon: Icons.brightness_2_outlined,
-            iconColor: atl.accent,
-            iconBg: atl.accentSoft,
-            title: 'Ran your morning briefing',
-            body: 'Summarised 3 events and the weather · 7:00 AM',
-          ),
-          const SizedBox(height: 8),
-          _label(atl, 'Earlier'),
-          _card(
-            atl,
-            icon: Icons.event_available_outlined,
-            iconColor: const Color(0xFF1EA88A),
-            iconBg: const Color(0x247FEBD0),
-            title: 'Created event "Dentist"',
-            body: 'From your voice note · yesterday',
-          ),
+          // Alerts section (ntfy activity)
+          if (showAlerts) ...[
+            if (alerts.isNotEmpty) ...[
+              _label(atl, 'Activity'),
+              for (final n in alerts) _alertCard(atl, n),
+            ] else if (_filterSel == _Filter.alerts)
+              _emptyHint(atl, 'No activity yet. Reminders and alerts land here.'),
+          ],
         ],
-      ],
+      ),
     );
   }
 
-  Widget _label(AtlColors atl, String text) => Padding(
-        padding: const EdgeInsets.only(bottom: 11),
-        child: Text(text.toUpperCase(),
-            style: atlSans(
-                size: 12, color: atl.text2, weight: FontWeight.w600, letterSpacing: 1)),
-      );
-
-  Widget _filter(AtlColors atl, String label, {bool active = false}) => Container(
+  Widget _filterChip(AtlColors atl, String label, _Filter value) {
+    final active = _filterSel == value;
+    return GestureDetector(
+      onTap: () => setState(() => _filterSel = value),
+      child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
         decoration: BoxDecoration(
           color: active ? atl.accent : atl.surface2,
@@ -88,18 +126,90 @@ class InboxScreen extends StatelessWidget {
                 size: 12,
                 color: active ? atl.accentInk : atl.text2,
                 weight: active ? FontWeight.w600 : FontWeight.w500)),
+      ),
+    );
+  }
+
+  Widget _label(AtlColors atl, String text) => Padding(
+        padding: const EdgeInsets.only(bottom: 11),
+        child: Text(text.toUpperCase(),
+            style: atlSans(
+                size: 12, color: atl.text2, weight: FontWeight.w600, letterSpacing: 1)),
       );
 
-  Widget _card(
-    AtlColors atl, {
-    required IconData icon,
-    required Color iconColor,
-    required Color iconBg,
-    required String title,
-    required String body,
-    bool unread = false,
-  }) =>
-      Container(
+  Widget _emailCard(AtlColors atl, EmailMessage m) => Pressable(
+        onTap: () => openEmail(context, m),
+        child: Container(
+          margin: const EdgeInsets.only(bottom: 12),
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: atl.surface,
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(color: atl.hairline),
+            boxShadow: atl.cardShadow,
+          ),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                width: 36,
+                height: 36,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: atl.accentSoft,
+                  borderRadius: BorderRadius.circular(11),
+                ),
+                child: Text(
+                  (m.from.display.isNotEmpty ? m.from.display[0] : '?').toUpperCase(),
+                  style: atlSans(size: 15, color: atl.accent, weight: FontWeight.w600),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(m.from.display,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: atlSans(
+                                  size: 14,
+                                  color: atl.text,
+                                  weight: m.unread ? FontWeight.w700 : FontWeight.w500)),
+                        ),
+                        if (m.unread)
+                          Container(
+                            width: 8,
+                            height: 8,
+                            decoration: BoxDecoration(shape: BoxShape.circle, color: atl.accent),
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 2),
+                    Text(m.subjectOrNoSubject,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: atlSans(
+                            size: 14,
+                            color: atl.text,
+                            weight: m.unread ? FontWeight.w600 : FontWeight.w400)),
+                    const SizedBox(height: 3),
+                    Text(m.snippet,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: atlSans(size: 13, color: atl.text2, height: 1.4)),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+
+  Widget _alertCard(AtlColors atl, InboxItem n) => Container(
         margin: const EdgeInsets.only(bottom: 12),
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
@@ -115,112 +225,62 @@ class InboxScreen extends StatelessWidget {
               width: 36,
               height: 36,
               decoration: BoxDecoration(
-                color: iconBg,
+                color: atl.accentSoft,
                 borderRadius: BorderRadius.circular(11),
               ),
-              child: Icon(icon, size: 18, color: iconColor),
+              child: Icon(Icons.notifications_none, size: 18, color: atl.accent),
             ),
             const SizedBox(width: 12),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(title,
+                  Text(n.title,
                       style: atlSans(size: 15, color: atl.text, weight: FontWeight.w600)),
-                  const SizedBox(height: 3),
-                  Text(body, style: atlSans(size: 13, color: atl.text2, height: 1.4)),
+                  if (n.message.isNotEmpty) ...[
+                    const SizedBox(height: 3),
+                    Text(n.message, style: atlSans(size: 13, color: atl.text2, height: 1.4)),
+                  ],
                 ],
               ),
             ),
-            if (unread) ...[
-              const SizedBox(width: 8),
-              Container(
-                margin: const EdgeInsets.only(top: 5),
-                width: 8,
-                height: 8,
-                decoration: BoxDecoration(shape: BoxShape.circle, color: atl.accent),
-              ),
-            ],
           ],
         ),
       );
 
-  Widget _actionableCard(AtlColors atl) => Container(
+  Widget _connectEmailCard(AtlColors atl) => Container(
         margin: const EdgeInsets.only(bottom: 12),
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
-          color: atl.surface,
+          color: atl.surface2,
           borderRadius: BorderRadius.circular(18),
           border: Border.all(color: atl.hairline),
-          boxShadow: atl.cardShadow,
         ),
-        child: Column(
+        child: Row(
           children: [
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Container(
-                  width: 36,
-                  height: 36,
-                  decoration: BoxDecoration(
-                    color: const Color(0x29F4A9D6),
-                    borderRadius: BorderRadius.circular(11),
-                  ),
-                  child: const Icon(Icons.schedule, size: 18, color: Color(0xFFE86FB0)),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text('Leave in 15 min for the dentist',
-                          style: atlSans(size: 15, color: atl.text, weight: FontWeight.w600)),
-                      const SizedBox(height: 3),
-                      Text('Traffic is light — 8 min drive.',
-                          style: atlSans(size: 13, color: atl.text2)),
-                    ],
-                  ),
-                ),
-                Container(
-                  margin: const EdgeInsets.only(top: 5),
-                  width: 8,
-                  height: 8,
-                  decoration: BoxDecoration(shape: BoxShape.circle, color: atl.accent),
-                ),
-              ],
-            ),
-            const SizedBox(height: 14),
-            Row(
-              children: [
-                Expanded(
-                  child: Container(
-                    alignment: Alignment.center,
-                    padding: const EdgeInsets.symmetric(vertical: 10),
-                    decoration: BoxDecoration(
-                      color: atl.accent,
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Text('Navigate',
-                        style: atlSans(size: 13, color: atl.accentInk, weight: FontWeight.w600)),
-                  ),
-                ),
-                const SizedBox(width: 9),
-                Expanded(
-                  child: Container(
-                    alignment: Alignment.center,
-                    padding: const EdgeInsets.symmetric(vertical: 10),
-                    decoration: BoxDecoration(
-                      color: atl.surface2,
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: atl.hairline),
-                    ),
-                    child: Text('Snooze',
-                        style: atlSans(size: 13, color: atl.text, weight: FontWeight.w600)),
-                  ),
-                ),
-              ],
+            Icon(Icons.mark_email_unread_outlined, size: 22, color: atl.text3),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Email not connected',
+                      style: atlSans(size: 14, color: atl.text, weight: FontWeight.w600)),
+                  const SizedBox(height: 2),
+                  Text('Add EMAIL_ADDRESS + an App Password to ~/.hermes/.env on your Mac to see mail here.',
+                      style: atlSans(size: 12, color: atl.text3)),
+                ],
+              ),
             ),
           ],
+        ),
+      );
+
+  Widget _emptyHint(AtlColors atl, String text) => Padding(
+        padding: const EdgeInsets.symmetric(vertical: 24),
+        child: Center(
+          child: Text(text,
+              textAlign: TextAlign.center, style: atlSans(size: 14, color: atl.text3)),
         ),
       );
 }

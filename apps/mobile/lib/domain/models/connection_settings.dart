@@ -10,10 +10,14 @@ class ConnectionSettings {
     required this.apiKey,
     this.ntfyServer = 'https://ntfy.sh',
     this.ntfyTopic = '',
+    this.userName = '',
   });
 
   final String baseUrl;
   final String apiKey;
+
+  /// Display name for the Today greeting (optional).
+  final String userName;
 
   /// ntfy server + topic for proactive push (reminders, briefings). Must match
   /// the gateway's `NTFY_SERVER_URL` / `NTFY_HOME_CHANNEL`.
@@ -61,12 +65,14 @@ class ConnectionSettings {
     String? apiKey,
     String? ntfyServer,
     String? ntfyTopic,
+    String? userName,
   }) =>
       ConnectionSettings(
         baseUrl: baseUrl ?? this.baseUrl,
         apiKey: apiKey ?? this.apiKey,
         ntfyServer: ntfyServer ?? this.ntfyServer,
         ntfyTopic: ntfyTopic ?? this.ntfyTopic,
+        userName: userName ?? this.userName,
       );
 
   static const empty = ConnectionSettings(baseUrl: '', apiKey: '');

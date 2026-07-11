@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../mcp/mcp_screen.dart';
+import '../email_settings_screen.dart';
 import '../model_switcher.dart';
 import '../view_models/settings_view_model.dart';
 
@@ -36,6 +37,19 @@ class SettingsScreen extends StatelessWidget {
               ),
               const SizedBox(height: 24),
             ],
+            TextField(
+              controller:
+                  TextEditingController.fromValue(_valueOf(vm.userName)),
+              onChanged: vm.setUserName,
+              autocorrect: false,
+              textCapitalization: TextCapitalization.words,
+              decoration: const InputDecoration(
+                labelText: 'Your name',
+                hintText: 'Shown in the Today greeting',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 16),
             TextField(
               controller:
                   TextEditingController.fromValue(_valueOf(vm.baseUrl)),
@@ -147,6 +161,14 @@ class SettingsScreen extends StatelessWidget {
                       subtitle: const Text('Add and manage tool servers'),
                       trailing: const Icon(Icons.chevron_right),
                       onTap: () => openMcpScreen(context),
+                    ),
+                    const Divider(height: 1),
+                    ListTile(
+                      leading: const Icon(Icons.mail_outline),
+                      title: const Text('Email'),
+                      subtitle: const Text('Connect Gmail (App Password)'),
+                      trailing: const Icon(Icons.chevron_right),
+                      onTap: () => openEmailSettings(context),
                     ),
                   ],
                 ),

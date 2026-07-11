@@ -20,6 +20,7 @@ class SettingsViewModel extends ChangeNotifier {
     apiKey = _settings.current.apiKey;
     ntfyServer = _settings.current.ntfyServer;
     ntfyTopic = _settings.current.ntfyTopic;
+    userName = _settings.current.userName;
   }
 
   final SettingsRepository _settings;
@@ -29,6 +30,7 @@ class SettingsViewModel extends ChangeNotifier {
   String apiKey = '';
   String ntfyServer = '';
   String ntfyTopic = '';
+  String userName = '';
 
   ConnectionProbe _probe = ConnectionProbe.idle;
   ConnectionProbe get probe => _probe;
@@ -57,6 +59,11 @@ class SettingsViewModel extends ChangeNotifier {
     notifyListeners();
   }
 
+  void setUserName(String value) {
+    userName = value;
+    notifyListeners();
+  }
+
   Future<void> save() async {
     await _settings.update(
       ConnectionSettings(
@@ -64,6 +71,7 @@ class SettingsViewModel extends ChangeNotifier {
         apiKey: apiKey,
         ntfyServer: ntfyServer.trim().isEmpty ? 'https://ntfy.sh' : ntfyServer,
         ntfyTopic: ntfyTopic,
+        userName: userName,
       ),
     );
     notifyListeners();

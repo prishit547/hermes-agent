@@ -1544,6 +1544,11 @@ class APIServerAdapter(BasePlatformAdapter):
                 "mcp_catalog": {"method": "GET", "path": "/api/mcp/catalog"},
                 "mcp_catalog_install": {"method": "POST", "path": "/api/mcp/catalog/install"},
                 "jobs": {"method": "GET", "path": "/api/jobs"},
+                "email_messages": {"method": "GET", "path": "/api/email/messages"},
+                "email_message": {"method": "GET", "path": "/api/email/messages/{msg_id}"},
+                "email_send": {"method": "POST", "path": "/api/email/send"},
+                "email_draft": {"method": "POST", "path": "/api/email/draft"},
+                "email_ai_draft": {"method": "POST", "path": "/api/email/ai-draft"},
                 "audio_transcriptions": {"method": "POST", "path": "/v1/audio/transcriptions"},
                 "audio_speech": {"method": "POST", "path": "/v1/audio/speech"},
                 "voice_stream": {"method": "GET", "path": "/v1/voice/stream"},
@@ -2058,6 +2063,629 @@ class APIServerAdapter(BasePlatformAdapter):
             )
         ok = not rc
         return web.json_response({"ok": ok, "name": name, "code": rc or 0}, status=200 if ok else 502)
+
+    # ------------------------------------------------------------------
+    # /api/email — Gmail read/send/draft (Bearer-authed, structured)
+    # ------------------------------------------------------------------
+    #
+    # These call tools/gmail_core directly (fast, structured) so the mobile app
+    # gets a real inbox without going through an agent turn. The AI-draft endpoint
+    # DOES use the agent to compose a reply. Gmail auth is set up via
+    # `python -m tools.gmail_auth`.
+
+    async def _handle_email_list(self, request: "web.Request") -> "web.Response":
+        """GET /api/email/messages?q=is:unread&max=20 — list messages (metadata)."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        query = request.query.get("q") or "is:unread"
+        try:
+            limit = self._parse_nonnegative_int(request.query.get("max"), default=20, maximum=50)
+        except Exception:
+            limit = 20
+        try:
+            from tools import gmail_core
+            loop = asyncio.get_running_loop()
+            msgs = await loop.run_in_executor(
+                None, lambda: gmail_core.list_messages(query=query, max_results=limit))
+        except Exception as exc:
+            return self._email_error(exc)
+        return web.json_response({"object": "list", "query": query, "messages": msgs})
+
+    async def _handle_email_get(self, request: "web.Request") -> "web.Response":
+        """GET /api/email/messages/{id} — full message with body."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        msg_id = request.match_info["msg_id"]
+        try:
+            from tools import gmail_core
+            loop = asyncio.get_running_loop()
+            msg = await loop.run_in_executor(None, lambda: gmail_core.get_message(msg_id))
+        except Exception as exc:
+            return self._email_error(exc)
+        return web.json_response({"object": "email", "message": msg})
+
+    async def _handle_email_send(self, request: "web.Request") -> "web.Response":
+        """POST /api/email/send — {to, subject, body, thread_id?, in_reply_to?}."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+        to = str(body.get("to") or "").strip()
+        if not to:
+            return web.json_response(_openai_error("'to' is required"), status=400)
+        try:
+            from tools import gmail_core
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(None, lambda: gmail_core.send_message(
+                to=to,
+                subject=str(body.get("subject") or ""),
+                body=str(body.get("body") or ""),
+                thread_id=(body.get("thread_id") or None),
+                in_reply_to=str(body.get("in_reply_to") or ""),
+            ))
+        except Exception as exc:
+            return self._email_error(exc)
+        return web.json_response(result)
+
+    async def _handle_email_draft(self, request: "web.Request") -> "web.Response":
+        """POST /api/email/draft — create a Gmail draft (same fields as send)."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+        try:
+            from tools import gmail_core
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(None, lambda: gmail_core.create_draft(
+                to=str(body.get("to") or "").strip(),
+                subject=str(body.get("subject") or ""),
+                body=str(body.get("body") or ""),
+                thread_id=(body.get("thread_id") or None),
+                in_reply_to=str(body.get("in_reply_to") or ""),
+            ))
+        except Exception as exc:
+            return self._email_error(exc)
+        return web.json_response(result)
+
+    async def _handle_email_mark_read(self, request: "web.Request") -> "web.Response":
+        """POST /api/email/messages/{id}/read — mark a message read."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        msg_id = request.match_info["msg_id"]
+        try:
+            from tools import gmail_core
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(None, lambda: gmail_core.mark_read(msg_id))
+        except Exception as exc:
+            return self._email_error(exc)
+        return web.json_response(result)
+
+    async def _handle_email_ai_draft(self, request: "web.Request") -> "web.Response":
+        """POST /api/email/ai-draft — agent composes a reply.
+
+        Body: ``{message_id}`` (fetch context automatically) OR an explicit
+        ``{from, subject, body}``; optional ``instructions`` steer the tone. The
+        agent generates the reply text (not sent) which the app shows for editing.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+
+        instructions = str(body.get("instructions") or "").strip()
+        original: Dict[str, Any]
+        msg_id = str(body.get("message_id") or "").strip()
+        if msg_id:
+            try:
+                from tools import gmail_core
+                loop = asyncio.get_running_loop()
+                original = await loop.run_in_executor(None, lambda: gmail_core.get_message(msg_id))
+            except Exception as exc:
+                return self._email_error(exc)
+        else:
+            original = {
+                "from": {"name": str(body.get("from") or "")},
+                "subject": str(body.get("subject") or ""),
+                "body": str(body.get("body") or ""),
+            }
+
+        sender = original.get("from", {})
+        sender_name = sender.get("name") if isinstance(sender, dict) else str(sender)
+        prompt = (
+            "Draft a reply to this email. Return ONLY the reply body text — no subject, "
+            "no preamble, no quoting of the original, no signature block beyond a simple sign-off.\n\n"
+            f"From: {sender_name}\n"
+            f"Subject: {original.get('subject','')}\n\n"
+            f"{original.get('body','')}\n"
+        )
+        if instructions:
+            prompt += f"\nTone/instructions: {instructions}\n"
+
+        try:
+            loop = asyncio.get_running_loop()
+            result, _usage = await self._run_agent(
+                user_message=prompt,
+                conversation_history=[],
+                session_id=f"email-draft-{uuid.uuid4().hex[:8]}",
+            )
+            draft_text = result.get("final_response", "") if isinstance(result, dict) else ""
+        except Exception as exc:
+            logger.exception("POST /api/email/ai-draft failed")
+            return web.json_response(
+                _openai_error(f"Failed to draft reply: {exc}", err_type="server_error"),
+                status=500,
+            )
+        return web.json_response({"object": "email.draft", "draft": draft_text.strip()})
+
+    async def _handle_calendar_events(self, request: "web.Request") -> "web.Response":
+        """GET /api/calendar/events?days=14 — upcoming events, structured + FAST.
+
+        Calls the Google Calendar API directly (no agent turn) so the mobile
+        calendar loads in ~1s instead of a ~30s agent round-trip. Returns
+        ``{events: [{title, start, end, location}]}``.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        try:
+            days = self._parse_nonnegative_int(request.query.get("days"), default=14, maximum=90)
+        except Exception:
+            days = 14
+        try:
+            from tools.google_calendar_auth import build_service, is_authorized, has_client_config
+            from tools.google_calendar_tool import _summarize_event, _now_iso, _plus_days_iso
+
+            def _fetch():
+                if not (is_authorized() or has_client_config()):
+                    raise RuntimeError("calendar_not_connected")
+                service = build_service()
+                if service is None:
+                    raise RuntimeError("calendar_not_connected")
+                items = service.events().list(
+                    calendarId="primary",
+                    timeMin=_now_iso(),
+                    timeMax=_plus_days_iso(days),
+                    singleEvents=True,
+                    orderBy="startTime",
+                    maxResults=50,
+                ).execute().get("items", [])
+                out = []
+                for ev in items:
+                    s = _summarize_event(ev)
+                    out.append({
+                        "title": s.get("summary") or "(no title)",
+                        "start": s.get("start"),
+                        "end": s.get("end"),
+                        "location": s.get("location"),
+                    })
+                return out
+
+            loop = asyncio.get_running_loop()
+            events = await loop.run_in_executor(None, _fetch)
+        except RuntimeError as exc:
+            if "calendar_not_connected" in str(exc):
+                return web.json_response(
+                    _openai_error("Google Calendar is not connected", code="calendar_unauthorized"),
+                    status=503,
+                )
+            logger.exception("GET /api/calendar/events failed")
+            return web.json_response(
+                _openai_error("Calendar request failed", err_type="server_error"), status=500)
+        except Exception:
+            logger.exception("GET /api/calendar/events failed")
+            return web.json_response(
+                _openai_error("Calendar request failed", err_type="server_error"), status=500)
+        return web.json_response({"object": "list", "events": events})
+
+    async def _handle_email_config_get(self, request: "web.Request") -> "web.Response":
+        """GET /api/email/config — whether email is configured + the address."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        import os
+        address = (os.getenv("EMAIL_ADDRESS") or os.getenv("EMAIL_USER") or "").strip()
+        has_pw = bool((os.getenv("EMAIL_APP_PASSWORD") or os.getenv("EMAIL_PASSWORD") or "").strip())
+        return web.json_response({
+            "configured": bool(address and has_pw),
+            "address": address,
+            "imap_host": os.getenv("EMAIL_IMAP_HOST", "imap.gmail.com"),
+            "smtp_host": os.getenv("EMAIL_SMTP_HOST", "smtp.gmail.com"),
+        })
+
+    async def _handle_email_config_set(self, request: "web.Request") -> "web.Response":
+        """POST /api/email/config — save email credentials.
+
+        Body: ``{address, app_password, imap_host?, smtp_host?}``. Persists to
+        ``~/.hermes/.env`` AND updates the live process env so it takes effect
+        immediately (no gateway restart). The password is user-entered in a
+        client field; this endpoint only stores it.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+        address = str(body.get("address") or "").strip()
+        password = str(body.get("app_password") or "").strip()
+        if not address or not password:
+            return web.json_response(
+                _openai_error("address and app_password are required"), status=400)
+        imap_host = str(body.get("imap_host") or "imap.gmail.com").strip()
+        smtp_host = str(body.get("smtp_host") or "smtp.gmail.com").strip()
+        try:
+            import os
+            from hermes_cli.config import save_env_value
+
+            def _persist():
+                save_env_value("EMAIL_ADDRESS", address)
+                save_env_value("EMAIL_APP_PASSWORD", password)
+                save_env_value("EMAIL_IMAP_HOST", imap_host)
+                save_env_value("EMAIL_SMTP_HOST", smtp_host)
+
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, _persist)
+            # Live-update this process so /api/email/* works without a restart.
+            os.environ["EMAIL_ADDRESS"] = address
+            os.environ["EMAIL_APP_PASSWORD"] = password
+            os.environ["EMAIL_IMAP_HOST"] = imap_host
+            os.environ["EMAIL_SMTP_HOST"] = smtp_host
+            # Start the realtime new-mail notifier now (no restart needed).
+            try:
+                from tools.email_notifier import start_background as _start_email_notifier
+                _start_email_notifier()
+            except Exception:
+                logger.debug("email notifier start after config failed", exc_info=True)
+        except Exception:
+            logger.exception("POST /api/email/config failed")
+            return web.json_response(
+                _openai_error("Failed to save email config", err_type="server_error"), status=500)
+        return web.json_response({"ok": True, "configured": True, "address": address})
+
+    def _email_error(self, exc: Exception) -> "web.Response":
+        """Map a Gmail failure to a client-safe response (503 when unauthorized)."""
+        msg = str(exc)
+        try:
+            from tools.gmail_core import GmailError
+            if isinstance(exc, GmailError):
+                code = "gmail_unauthorized" if "not connected" in msg.lower() else "gmail_error"
+                status = 503 if code == "gmail_unauthorized" else 502
+                return web.json_response(_openai_error(msg, code=code), status=status)
+        except Exception:
+            pass
+        logger.exception("email endpoint failed")
+        return web.json_response(_openai_error("Email request failed", err_type="server_error"), status=500)
+
+    # ------------------------------------------------------------------
+    # /music + /api/music — YouTube music streaming (Bearer-authed, structured)
+    # ------------------------------------------------------------------
+    #
+    # Playback lives on the client (the Flutter app streams the proxy below);
+    # these expose the shared in-memory player + a same-origin audio proxy so the
+    # app plays seekable YouTube audio without a client-side yt-dlp. The player,
+    # store (history/playlists) and recommender live in plugins/music. Both the
+    # agent `music` tool and these endpoints drive the same `player` singleton.
+
+    def _music_stream_key_ok(self, request: "web.Request") -> bool:
+        """Auth for the audio proxy — accepts the API key via the ``key`` query
+        param OR a Bearer header. The mobile audio element can't always set
+        headers on a media URL, so the key rides in the query string (same
+        pattern the voice WebSocket uses for its token)."""
+        if not self._api_key:
+            return True
+        token = request.query.get("key", "")
+        if token and hmac.compare_digest(token, self._api_key):
+            return True
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            return hmac.compare_digest(auth_header[7:].strip(), self._api_key)
+        return False
+
+    _MUSIC_PASS_THROUGH = ("content-length", "content-range", "content-type")
+
+    async def _handle_music_stream(self, request: "web.Request") -> "web.StreamResponse":
+        """GET /music/stream/{video_id}?key=... — Range-aware audio proxy.
+
+        Resolves the best-audio URL with yt-dlp and replays it, forwarding the
+        client's Range header and the headers YouTube expects; re-resolves once
+        on a stale-URL 403. Ported from Atlantic OS's routes_music.stream."""
+        if not self._music_stream_key_ok(request):
+            return web.json_response(_openai_error("Invalid API key", code="invalid_api_key"), status=401)
+        video_id = request.match_info["video_id"]
+        try:
+            import httpx
+            from plugins.music import youtube
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("music stream unavailable: %s", exc)
+            return web.json_response(_openai_error("Music streaming unavailable", err_type="server_error"), status=503)
+
+        range_header = request.headers.get("Range")
+        client = httpx.AsyncClient(timeout=httpx.Timeout(20.0, read=None), follow_redirects=True)
+        try:
+            resolved = await youtube.resolve(video_id)
+            upstream = None
+            for attempt in range(2):
+                headers = dict(resolved.headers)
+                if range_header:
+                    headers["Range"] = range_header
+                req = client.build_request("GET", resolved.url, headers=headers)
+                upstream = await client.send(req, stream=True)
+                if upstream.status_code == 403 and attempt == 0:
+                    await upstream.aclose()
+                    resolved = await youtube.resolve(video_id, force=True)  # stale URL
+                    continue
+                break
+        except Exception as exc:  # noqa: BLE001
+            await client.aclose()
+            logger.warning("music stream resolve failed for %s: %s", video_id, exc)
+            return web.json_response(_openai_error("Could not resolve audio", err_type="server_error"), status=502)
+
+        out = web.StreamResponse(status=upstream.status_code)
+        out.headers["Accept-Ranges"] = "bytes"
+        out.headers["Cache-Control"] = "no-store"
+        for h in self._MUSIC_PASS_THROUGH:
+            if h in upstream.headers:
+                out.headers[h.title()] = upstream.headers[h]
+        out.headers.setdefault("Content-Type", resolved.mime)
+        try:
+            await out.prepare(request)
+            async for chunk in upstream.aiter_bytes(65536):
+                await out.write(chunk)
+        except (ConnectionResetError, asyncio.CancelledError):
+            pass  # client seeked/closed — normal for audio playback
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("music stream body ended for %s: %s", video_id, exc)
+        finally:
+            await upstream.aclose()
+            await client.aclose()
+        return out
+
+    async def _music_player(self):
+        """The shared music player singleton (imported lazily so a music-free
+        deployment never imports yt-dlp glue)."""
+        from plugins.music.player import player
+        return player
+
+    async def _handle_music_now_playing(self, request: "web.Request") -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        player = await self._music_player()
+        return web.json_response(player.snapshot())
+
+    async def _handle_music_play(self, request: "web.Request") -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+        query = str(body.get("query") or "").strip()
+        if not query:
+            return web.json_response(_openai_error("'query' is required"), status=400)
+        player = await self._music_player()
+        try:
+            track = await player.play_query(query)
+        except Exception as exc:
+            return self._music_error(exc)
+        if not track:
+            return web.json_response({**player.snapshot(), "error": f"No results for {query!r}."})
+        return web.json_response(player.snapshot())
+
+    async def _handle_music_search(self, request: "web.Request") -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+        query = str(body.get("query") or "").strip()
+        if not query:
+            return web.json_response(_openai_error("'query' is required"), status=400)
+        try:
+            from plugins.music import youtube
+            tracks = await youtube.search(query, limit=12)
+        except Exception as exc:
+            return self._music_error(exc)
+        return web.json_response({"results": [t.to_dict() for t in tracks]})
+
+    async def _handle_music_enqueue(self, request: "web.Request") -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+        query = str(body.get("query") or "").strip()
+        player = await self._music_player()
+        try:
+            await player.enqueue_query(query)
+        except Exception as exc:
+            return self._music_error(exc)
+        return web.json_response(player.snapshot())
+
+    async def _handle_music_play_track(self, request: "web.Request") -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+        from plugins.music.youtube import Track
+        player = await self._music_player()
+        try:
+            await player.play_track(Track.from_dict(body))
+        except Exception as exc:
+            return self._music_error(exc)
+        return web.json_response(player.snapshot())
+
+    async def _handle_music_enqueue_track(self, request: "web.Request") -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+        from plugins.music.youtube import Track
+        player = await self._music_player()
+        try:
+            await player.enqueue_track(Track.from_dict(body))
+        except Exception as exc:
+            return self._music_error(exc)
+        return web.json_response(player.snapshot())
+
+    async def _handle_music_control(self, request: "web.Request") -> "web.Response":
+        """POST /api/music/{toggle|next|previous|stop|play-index|clear-queue}."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        action = request.path.rsplit("/", 1)[-1]
+        player = await self._music_player()
+        if action == "toggle":
+            player.toggle()
+        elif action == "next":
+            player.next()
+            await self._maybe_extend_radio()
+        elif action == "previous":
+            player.previous()
+        elif action == "stop":
+            player.stop()
+        elif action == "play-index":
+            body, err = await self._read_json_body(request)
+            if err:
+                return err
+            player.play_index(int(body.get("index") or 0))
+        elif action == "clear-queue":
+            player.clear_queue()
+        else:
+            return web.json_response(_openai_error(f"Unknown control: {action}"), status=400)
+        return web.json_response(player.snapshot())
+
+    async def _handle_music_seek(self, request: "web.Request") -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+        player = await self._music_player()
+        player.seek(float(body.get("position") or 0.0))
+        return web.json_response(player.snapshot())
+
+    async def _handle_music_report(self, request: "web.Request") -> "web.Response":
+        """POST /api/music/report — the client reports true position + playing."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+        player = await self._music_player()
+        player.report(float(body.get("position") or 0.0), bool(body.get("isPlaying", True)))
+        return web.json_response({"ok": True})
+
+    async def _handle_music_feedback(self, request: "web.Request") -> "web.Response":
+        """POST /api/music/feedback — record one listening signal (played/
+        completed/skipped/liked/disliked) for the recommender + taste profile."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+        from plugins.music import store
+        event = str(body.get("event") or "").strip()
+        store.record_event(
+            video_id=str(body.get("videoId") or ""),
+            title=str(body.get("title") or ""),
+            artist=str(body.get("artist") or ""),
+            duration=float(body.get("duration") or 0.0),
+            thumbnail=body.get("thumbnail"),
+            event=event,
+            played_fraction=float(body.get("playedFraction") or 0.0),
+            position=float(body.get("position") or 0.0),
+            source=str(body.get("source") or "youtube"),
+        )
+        return web.json_response({"ok": True})
+
+    async def _handle_music_recommendations(self, request: "web.Request") -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        player = await self._music_player()
+        try:
+            from plugins.music import recommender
+            tracks = await recommender.recommend(seed=player.current, use_llm=False, limit=12)
+        except Exception as exc:
+            return self._music_error(exc)
+        return web.json_response({"results": [t.to_dict() for t in tracks]})
+
+    async def _handle_music_playlists(self, request: "web.Request") -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        from plugins.music import store
+        if request.method == "GET":
+            return web.json_response({"playlists": store.get_playlists()})
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+        name = str(body.get("name") or "").strip()
+        if not name:
+            return web.json_response(_openai_error("'name' is required"), status=400)
+        return web.json_response(store.create_playlist(name, str(body.get("description") or "")))
+
+    async def _handle_music_playlist_detail(self, request: "web.Request") -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        from plugins.music import store
+        pid = request.match_info["playlist_id"]
+        if request.method == "DELETE":
+            return web.json_response({"ok": store.delete_playlist(pid)})
+        # POST — add current-body track, or play the playlist when {"action":"play"}
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+        if str(body.get("action") or "") == "play":
+            from plugins.music.youtube import Track
+            pl = store.find_playlist(pid)
+            if not pl:
+                return web.json_response(_openai_error("Playlist not found"), status=404)
+            player = await self._music_player()
+            await player.play_playlist_tracks([Track.from_dict(t) for t in pl.get("tracks", [])])
+            return web.json_response(player.snapshot())
+        pl = store.add_track_to_playlist(pid, body)
+        if not pl:
+            return web.json_response(_openai_error("Playlist not found"), status=404)
+        return web.json_response(pl)
+
+    async def _maybe_extend_radio(self) -> None:
+        """Endless radio: top up the queue with fresh recommendations when it
+        runs low (fire-and-forget; never breaks playback)."""
+        try:
+            player = await self._music_player()
+            if not player.current or player.upcoming_count() > 2:
+                return
+            from plugins.music import recommender
+            tracks = await recommender.recommend(seed=player.current, use_llm=False, limit=10)
+            if tracks:
+                await player.extend_queue(tracks)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("music: radio extend failed: %s", exc)
+
+    def _music_error(self, exc: Exception) -> "web.Response":
+        logger.warning("music endpoint failed: %s", exc)
+        return web.json_response(_openai_error(f"Music request failed: {exc}", err_type="server_error"), status=502)
 
     # ------------------------------------------------------------------
     # /v1/audio — speech-to-text and text-to-speech
@@ -5404,6 +6032,36 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/api/mcp/servers/{name}/test", self._handle_test_mcp)
             self._app.router.add_get("/api/mcp/catalog", self._handle_mcp_catalog)
             self._app.router.add_post("/api/mcp/catalog/install", self._handle_mcp_catalog_install)
+            # Email (Gmail) — structured read/send/draft + agent AI-draft.
+            self._app.router.add_get("/api/email/messages", self._handle_email_list)
+            self._app.router.add_get("/api/email/messages/{msg_id}", self._handle_email_get)
+            self._app.router.add_post("/api/email/messages/{msg_id}/read", self._handle_email_mark_read)
+            self._app.router.add_post("/api/email/send", self._handle_email_send)
+            self._app.router.add_post("/api/email/draft", self._handle_email_draft)
+            self._app.router.add_post("/api/email/ai-draft", self._handle_email_ai_draft)
+            self._app.router.add_get("/api/email/config", self._handle_email_config_get)
+            self._app.router.add_post("/api/email/config", self._handle_email_config_set)
+            # Music — YouTube streaming (audio proxy + player control + library).
+            self._app.router.add_get("/music/stream/{video_id}", self._handle_music_stream)
+            self._app.router.add_get("/api/music/now-playing", self._handle_music_now_playing)
+            self._app.router.add_post("/api/music/play", self._handle_music_play)
+            self._app.router.add_post("/api/music/search", self._handle_music_search)
+            self._app.router.add_post("/api/music/enqueue", self._handle_music_enqueue)
+            self._app.router.add_post("/api/music/play-track", self._handle_music_play_track)
+            self._app.router.add_post("/api/music/enqueue-track", self._handle_music_enqueue_track)
+            self._app.router.add_post("/api/music/seek", self._handle_music_seek)
+            self._app.router.add_post("/api/music/report", self._handle_music_report)
+            self._app.router.add_post("/api/music/feedback", self._handle_music_feedback)
+            self._app.router.add_get("/api/music/recommendations", self._handle_music_recommendations)
+            self._app.router.add_get("/api/music/playlists", self._handle_music_playlists)
+            self._app.router.add_post("/api/music/playlists", self._handle_music_playlists)
+            self._app.router.add_post("/api/music/playlists/{playlist_id}", self._handle_music_playlist_detail)
+            self._app.router.add_delete("/api/music/playlists/{playlist_id}", self._handle_music_playlist_detail)
+            # Transport verbs (toggle|next|previous|stop|play-index|clear-queue).
+            for _mv in ("toggle", "next", "previous", "stop", "play-index", "clear-queue"):
+                self._app.router.add_post(f"/api/music/{_mv}", self._handle_music_control)
+            # Calendar events — direct (fast) read, no agent turn.
+            self._app.router.add_get("/api/calendar/events", self._handle_calendar_events)
 
             # Chronos managed-cron fire webhook (NAS → agent). Authenticated by a
             # NAS-minted JWT (NOT API_SERVER_KEY), so it has its own auth path.
@@ -5415,6 +6073,16 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/v1/runs/{run_id}/events", self._handle_run_events)
             self._app.router.add_post("/v1/runs/{run_id}/approval", self._handle_run_approval)
             self._app.router.add_post("/v1/runs/{run_id}/stop", self._handle_stop_run)
+            # Start the in-process email IMAP-IDLE notifier if email is configured,
+            # so new mail pushes to the phone without the user running a separate
+            # process. No-op when email isn't set up yet (started later via
+            # POST /api/email/config).
+            try:
+                from tools.email_notifier import start_background as _start_email_notifier
+                _start_email_notifier()
+            except Exception:
+                logger.debug("email notifier not started", exc_info=True)
+
             # Store the adapter after native routes are registered. Local Hermes-Relay
             # bootstrap shims use this key as a feature-detection hook; registering
             # native routes first lets those shims no-op instead of shadowing the

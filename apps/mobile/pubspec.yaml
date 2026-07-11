@@ -57,6 +57,13 @@ dependencies:
   permission_handler: ^11.3.1
   path_provider: ^2.1.4
 
+  # Music playback: just_audio streams progressively (HTTP Range) so tracks
+  # start near-instantly. It plays from an in-app loopback proxy
+  # (http://127.0.0.1) that relays the gateway's /music/stream/<id> — the
+  # localhost hop is ATS-exempt, sidestepping iOS AVPlayer's refusal to stream
+  # cleartext HTTP. (audioplayers above stays for short TTS clips.)
+  just_audio: ^0.10.5
+
   # Stable client-generated session ids for X-Hermes-Session-Id continuity.
   uuid: ^4.5.1
 

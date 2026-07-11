@@ -1,0 +1,7 @@
+name: music
+version: 1.0.0
+description: "YouTube music streaming — one `music` tool (play, search, enqueue, recommend, transport, likes, playlists). Streams via yt-dlp (no API key); gateway proxies audio at /music/stream/<id>. Ported from Atlantic OS."
+author: Hermes
+kind: backend
+provides_tools:
+  - music

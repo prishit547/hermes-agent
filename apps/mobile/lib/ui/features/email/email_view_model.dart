@@ -218,4 +218,52 @@ class EmailViewModel extends ChangeNotifier {
 
     await Future.wait(unread.map((m) => _repo.markRead(m.id)));
   }
+
+  Map<String, List<EmailMessage>> get categoryDigests {
+    final Map<String, List<EmailMessage>> groups = {
+      'Work & Projects': [],
+      'Personal': [],
+      'Social & Invites': [],
+      'Updates & Promos': [],
+    };
+
+    for (final m in _messages) {
+      final subject = m.subject.toLowerCase();
+      final snippet = m.snippet.toLowerCase();
+      final from = m.from.display.toLowerCase();
+
+      if (subject.contains('deploy') || subject.contains('review') || 
+          subject.contains('schedule') || subject.contains('deadline') || 
+          subject.contains('task') || subject.contains('project') || 
+          subject.contains('work') || subject.contains('meeting') ||
+          snippet.contains('meeting') || snippet.contains('task')) {
+        groups['Work & Projects']!.add(m);
+      } else if (from.contains('linkedin') || from.contains('facebook') || 
+                 from.contains('twitter') || from.contains('instagram') || 
+                 subject.contains('invite') || subject.contains('social') ||
+                 snippet.contains('invite')) {
+        groups['Social & Invites']!.add(m);
+      } else if (subject.contains('offer') || subject.contains('discount') || 
+                 subject.contains('newsletter') || subject.contains('update') || 
+                 subject.contains('receipt') || subject.contains('invoice') || 
+                 snippet.contains('receipt') || snippet.contains('newsletter')) {
+        groups['Updates & Promos']!.add(m);
+      } else {
+        groups['Personal']!.add(m);
+      }
+    }
+
+    groups.removeWhere((k, v) => v.isEmpty);
+    return groups;
+  }
+
+  Future<void> markCategoryRead(List<EmailMessage> list) async {
+    final unread = list.where((m) => m.unread).toList();
+    if (unread.isEmpty) return;
+
+    for (final m in unread) {
+      markReadLocally(m.id);
+    }
+    await Future.wait(unread.map((m) => _repo.markRead(m.id)));
+  }
 }

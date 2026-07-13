@@ -28,6 +28,7 @@ import 'ui/features/settings/views/settings_screen.dart';
 import 'ui/features/shell/home_shell.dart';
 import 'ui/features/shell/shell_controller.dart';
 import 'ui/features/voice/voice_view_model.dart';
+import 'ui/features/voice/assistant_overlay_screen.dart';
 
 /// Composition root. Builds the dependency graph once (services → repositories
 /// → view models) and wires it into the widget tree with `provider`, themed
@@ -144,7 +145,22 @@ class HermesApp extends StatelessWidget {
           theme: buildAtlTheme(Brightness.light),
           darkTheme: buildAtlTheme(Brightness.dark),
           themeMode: theme.mode,
-          home: const _RootGate(),
+          initialRoute: '/',
+          onGenerateRoute: (settings) {
+            if (settings.name == '/assistant_overlay') {
+              return PageRouteBuilder(
+                pageBuilder: (_, __, ___) => const AssistantOverlayScreen(),
+                opaque: false,
+                barrierColor: Colors.transparent,
+                transitionDuration: Duration.zero,
+                reverseTransitionDuration: Duration.zero,
+              );
+            }
+            return MaterialPageRoute(
+              settings: settings,
+              builder: (_) => const _RootGate(),
+            );
+          },
         ),
       ),
     );

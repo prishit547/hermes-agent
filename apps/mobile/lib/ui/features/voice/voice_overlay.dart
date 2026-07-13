@@ -18,13 +18,14 @@ class VoiceOverlay extends StatefulWidget {
   State<VoiceOverlay> createState() => _VoiceOverlayState();
 }
 
-class _VoiceOverlayState extends State<VoiceOverlay> {
+class _VoiceOverlayState extends State<VoiceOverlay> with WidgetsBindingObserver {
   final _stopwatch = Stopwatch()..start();
   Timer? _timer;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _timer = Timer.periodic(const Duration(seconds: 1), (_) => setState(() {}));
     // Connect the realtime voice socket and start the hands-free loop.
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -34,9 +35,18 @@ class _VoiceOverlayState extends State<VoiceOverlay> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _timer?.cancel();
     context.read<VoiceViewModel>().reset();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
+      // Release mic and disconnect socket when app goes to background.
+      context.read<ShellController>().closeVoice();
+    }
   }
 
   String get _elapsed {

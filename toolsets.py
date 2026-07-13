@@ -248,6 +248,12 @@ TOOLSETS = {
         "includes": []
     },
 
+    "alarm": {
+        "description": "On-device alarms and reminders",
+        "tools": ["device_alarm"],
+        "includes": []
+    },
+
     "project": {
         "description": "Desktop Projects — create/switch named workspaces (GUI sessions only)",
         "tools": ["project_list", "project_create", "project_switch"],

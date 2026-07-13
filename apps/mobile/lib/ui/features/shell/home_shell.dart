@@ -7,11 +7,13 @@ import '../../core/atl_theme.dart';
 import '../calendar/calendar_screen.dart';
 import '../chat/views/chat_screen.dart';
 import '../../../../data/services/notification_service.dart';
+import '../../../../data/services/reminder_service.dart';
 import '../email/email_view_model.dart';
 import '../inbox/inbox_screen.dart';
 import '../music/mini_player.dart';
 import '../today/today_screen.dart';
 import '../voice/voice_overlay.dart';
+import '../voice/alarm_overlay.dart';
 import 'shell_controller.dart';
 
 /// Root scaffold: the app-background gradient, the active tab screen (with an
@@ -31,6 +33,7 @@ class HomeShell extends StatelessWidget {
   Widget build(BuildContext context) {
     final atl = context.atl;
     final shell = context.watch<ShellController>();
+    final reminders = context.watch<ReminderService>();
 
     return Container(
       decoration: BoxDecoration(gradient: atl.appBg),
@@ -39,7 +42,6 @@ class HomeShell extends StatelessWidget {
         body: Stack(
           children: [
             SafeArea(
-              bottom: false,
               child: AnimatedSwitcher(
                 duration: const Duration(milliseconds: 340),
                 switchInCurve: Curves.easeOutCubic,
@@ -61,9 +63,13 @@ class HomeShell extends StatelessWidget {
               ),
             ),
             if (shell.voiceOpen) const Positioned.fill(child: VoiceOverlay()),
+            if (reminders.ringingAlarm != null)
+              Positioned.fill(
+                child: AlarmOverlay(reminder: reminders.ringingAlarm!),
+              ),
           ],
         ),
-        bottomNavigationBar: shell.voiceOpen
+        bottomNavigationBar: (shell.voiceOpen || reminders.ringingAlarm != null)
             ? null
             : const Column(
                 mainAxisSize: MainAxisSize.min,

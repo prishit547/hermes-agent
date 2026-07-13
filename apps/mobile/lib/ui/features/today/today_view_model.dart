@@ -10,6 +10,8 @@ import '../../../domain/models/calendar_event.dart';
 import '../../../domain/models/local_reminder.dart';
 import '../../../domain/models/message.dart';
 
+enum TodayTimePeriod { morningRise, deepWork, windDown }
+
 /// Backs the Today dashboard with real data: a live agent-generated briefing
 /// plus today's calendar events (one combined agent round-trip), and today's
 /// on-device reminders as the "Due today" list.
@@ -76,15 +78,27 @@ class TodayViewModel extends ChangeNotifier {
   static const _briefingCacheKey = 'hermes.today.briefing_cache';
   static const _eventsCacheKey = 'hermes.today.events_cache';
 
+  TodayTimePeriod _getCurrentPeriod() {
+    final hour = DateTime.now().hour;
+    if (hour >= 6 && hour < 12) {
+      return TodayTimePeriod.morningRise;
+    } else if (hour >= 12 && hour < 18) {
+      return TodayTimePeriod.deepWork;
+    } else {
+      return TodayTimePeriod.windDown;
+    }
+  }
+
   /// Load once (on first Today open); no-op if already loaded or loading. Tab
   /// switches rebuild the screen, so this avoids re-firing the ~20s agent call.
-  Future<void> loadIfNeeded() async {
+  Future<void> loadIfNeeded({TodayTimePeriod? period}) async {
     if (_loadedOnce || _loading) return;
     _loading = true;
     notifyListeners();
+    final currentPeriod = period ?? _getCurrentPeriod();
     try {
       final prefs = await SharedPreferences.getInstance();
-      final cachedBriefing = prefs.getString(_briefingCacheKey);
+      final cachedBriefing = prefs.getString('${_briefingCacheKey}_${currentPeriod.name}');
       final cachedEvents = prefs.getStringList(_eventsCacheKey);
       if (cachedBriefing != null) {
         _briefing = cachedBriefing;
@@ -100,20 +114,31 @@ class TodayViewModel extends ChangeNotifier {
         _loadedOnce = true;
         _loading = false;
         notifyListeners();
+        return;
       }
     } catch (_) {}
 
-    await load();
+    await load(period: currentPeriod);
   }
 
-  Future<void> load() async {
+  Future<void> load({TodayTimePeriod? period}) async {
     _loading = true;
     _loadedOnce = true;
     notifyListeners();
 
-    const prompt =
-        'Write a warm, concise 2-sentence daily briefing for me for today, and list today\'s '
-        'calendar events. Use the google_calendar tool for events. Mention how busy today is. '
+    final currentPeriod = period ?? _getCurrentPeriod();
+
+    final contextPrompt = switch (currentPeriod) {
+      TodayTimePeriod.morningRise =>
+        'Write a warm, concise 2-sentence morning briefing for today, welcoming the day, listing today\'s calendar events, and mentioning how busy today is. ',
+      TodayTimePeriod.deepWork =>
+        'Write a warm, concise 2-sentence afternoon briefing, focusing on focus, productivity, task priorities, and listing today\'s remaining calendar events. ',
+      TodayTimePeriod.windDown =>
+        'Write a warm, concise 2-sentence evening wind-down briefing, focusing on reviewing today, relaxation, preparing for tomorrow, and listing tomorrow\'s calendar events. ',
+    };
+
+    final prompt =
+        '$contextPrompt Use the google_calendar tool for events. '
         'Respond with ONLY a compact JSON object, no prose, no code fences, of the form '
         '{"briefing": str, "events": [{"title": str, "start": ISO8601, "end": ISO8601 or null, "location": str or null}]}. '
         'If Google Calendar is not connected, still return a friendly briefing and an empty events array.';
@@ -137,7 +162,7 @@ class TodayViewModel extends ChangeNotifier {
 
         // Save to cache
         final prefs = await SharedPreferences.getInstance();
-        await prefs.setString(_briefingCacheKey, _briefing);
+        await prefs.setString('${_briefingCacheKey}_${currentPeriod.name}', _briefing);
         await prefs.setStringList(
           _eventsCacheKey,
           _events.map((e) => jsonEncode(e.toJson())).toList(),

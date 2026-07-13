@@ -183,9 +183,6 @@ def synthesize_speech(text: str) -> Tuple[bytes, str, Optional[str]]:
     if not file_path or not os.path.isfile(file_path):
         raise AudioRequestError(500, "Audio file missing")
 
-    ext = os.path.splitext(file_path)[1].lower()
-    mime_type = SPEECH_MIME_TYPES.get(ext, "audio/mpeg")
-
     try:
         with open(file_path, "rb") as fh:
             audio_bytes = fh.read()
@@ -196,6 +193,18 @@ def synthesize_speech(text: str) -> Tuple[bytes, str, Optional[str]]:
             os.unlink(file_path)
         except OSError:
             pass
+
+    ext = os.path.splitext(file_path)[1].lower()
+    mime_type = SPEECH_MIME_TYPES.get(ext, "audio/mpeg")
+
+    if audio_bytes.startswith(b"RIFF"):
+        mime_type = "audio/wav"
+    elif audio_bytes.startswith(b"fLaC"):
+        mime_type = "audio/flac"
+    elif audio_bytes.startswith(b"OggS"):
+        mime_type = "audio/ogg"
+    elif audio_bytes.startswith(b"ID3") or audio_bytes.startswith(b"\xff\xfb") or audio_bytes.startswith(b"\xff\xf3") or audio_bytes.startswith(b"\xff\xf2"):
+        mime_type = "audio/mpeg"
 
     return audio_bytes, mime_type, result.get("provider")
 

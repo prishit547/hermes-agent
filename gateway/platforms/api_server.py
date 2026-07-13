@@ -2200,13 +2200,28 @@ class APIServerAdapter(BasePlatformAdapter):
 
         sender = original.get("from", {})
         sender_name = sender.get("name") if isinstance(sender, dict) else str(sender)
+
+        user_address = ""
+        try:
+            from tools import gmail_core
+            user_address = gmail_core._cfg().get("address") or ""
+        except Exception:
+            pass
+
         prompt = (
             "Draft a reply to this email. Return ONLY the reply body text — no subject, "
             "no preamble, no quoting of the original, no signature block beyond a simple sign-off.\n\n"
             f"From: {sender_name}\n"
+            f"To: {user_address}\n"
             f"Subject: {original.get('subject','')}\n\n"
             f"{original.get('body','')}\n"
         )
+        if user_address:
+            prompt += (
+                f"\nNote: The user writing the reply has the email address {user_address}. "
+                "Check your memory/profile context for the user's name associated with this address "
+                "and use it to sign off appropriately.\n"
+            )
         if instructions:
             prompt += f"\nTone/instructions: {instructions}\n"
 

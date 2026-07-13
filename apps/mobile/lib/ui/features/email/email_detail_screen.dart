@@ -75,9 +75,13 @@ class _EmailDetailScreenState extends State<EmailDetailScreen> {
   }
 
   Future<void> _aiDraft() async {
+    final note = _reply.text.trim();
     setState(() => _drafting = true);
     try {
-      final text = await context.read<EmailRepository>().aiDraft(messageId: widget.summary.id);
+      final text = await context.read<EmailRepository>().aiDraft(
+            messageId: widget.summary.id,
+            instructions: note.isNotEmpty ? note : null,
+          );
       if (!mounted) return;
       setState(() {
         _reply.text = text;

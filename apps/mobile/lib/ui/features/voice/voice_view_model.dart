@@ -41,7 +41,7 @@ class VoiceViewModel extends ChangeNotifier {
   DateTime _lastLoud = DateTime.now();
   DateTime _listenStart = DateTime.now();
 
-  final List<Uint8List> _ttsQueue = [];
+  final List<VoiceTtsClip> _ttsQueue = [];
   bool _playing = false;
   bool _turnComplete = false;
 
@@ -152,8 +152,8 @@ class VoiceViewModel extends ChangeNotifier {
       case VoiceDelta(:final text):
         _reply.write(text);
         _set(HaloState.speaking, 'Speaking', _reply.toString().trim());
-      case VoiceTtsClip(:final bytes):
-        _ttsQueue.add(bytes);
+      case VoiceTtsClip():
+        _ttsQueue.add(event);
         _drainTts();
       case VoiceTurnComplete():
         _turnComplete = true;
@@ -178,7 +178,7 @@ class VoiceViewModel extends ChangeNotifier {
     while (_ttsQueue.isNotEmpty) {
       final clip = _ttsQueue.removeAt(0);
       try {
-        await _audio.playToCompletion(clip);
+        await _audio.playToCompletion(clip.bytes, mimeType: clip.mime);
       } catch (_) {
         // Best-effort playback; skip a bad clip.
       }

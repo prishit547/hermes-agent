@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:record/record.dart';
 import 'package:uuid/uuid.dart';
 
@@ -18,6 +19,8 @@ import '../../core/halo_orb.dart';
 /// during listening it commits immediately. Streamed TTS + barge-in are what
 /// this path adds over the request/response push-to-talk it replaces.
 class VoiceViewModel extends ChangeNotifier {
+  static const _callChannel = MethodChannel('hermes/callkit');
+
   VoiceViewModel(this._voice, this._audio);
 
   final VoiceStreamService _voice;
@@ -69,6 +72,7 @@ class VoiceViewModel extends ChangeNotifier {
   Future<void> begin() async {
     if (_active) return;
     _active = true;
+    unawaited(_callChannel.invokeMethod('startCall'));
     _set(HaloState.thinking, 'Connecting…', 'Starting hands-free voice…');
 
     if (!await _audio.hasMicPermission()) {
@@ -226,6 +230,7 @@ class VoiceViewModel extends ChangeNotifier {
 
   /// Called when the overlay closes.
   Future<void> reset() async {
+    unawaited(_callChannel.invokeMethod('endCall'));
     _active = false;
     await _stopListening();
     await _audio.cancel();

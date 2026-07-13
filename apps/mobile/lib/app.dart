@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import 'data/repositories/calendar_repository.dart';
@@ -160,6 +161,19 @@ class HermesApp extends StatelessWidget {
               settings: settings,
               builder: (_) => const _RootGate(),
             );
+          },
+          builder: (context, child) {
+            final isDark = Theme.of(context).brightness == Brightness.dark;
+            SystemChrome.setSystemUIOverlayStyle(
+              SystemUiOverlayStyle(
+                statusBarColor: Colors.transparent,
+                statusBarIconBrightness: isDark ? Brightness.light : Brightness.dark,
+                statusBarBrightness: isDark ? Brightness.dark : Brightness.light,
+                systemNavigationBarColor: Colors.transparent,
+                systemNavigationBarIconBrightness: isDark ? Brightness.light : Brightness.dark,
+              ),
+            );
+            return child!;
           },
         ),
       ),

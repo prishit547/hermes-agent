@@ -40,6 +40,8 @@ class MusicViewModel extends ChangeNotifier {
           notifyListeners();
         }
       }),
+      _svc.onSkipNext.listen((_) => next()),
+      _svc.onSkipPrevious.listen((_) => previous()),
     ]);
   }
 
@@ -336,7 +338,7 @@ class MusicViewModel extends ChangeNotifier {
     _error = null;
     notifyListeners();
     try {
-      await _svc.playUrl(videoId, _repo.streamUri(videoId));
+      await _svc.playUrl(videoId, _repo.streamUri(videoId), track: track);
       if (track != null) unawaited(_repo.feedback(track: track, event: 'played'));
     } catch (e) {
       // Only report if this is still the track we're trying to play.

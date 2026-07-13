@@ -63,6 +63,7 @@ dependencies:
   # localhost hop is ATS-exempt, sidestepping iOS AVPlayer's refusal to stream
   # cleartext HTTP. (audioplayers above stays for short TTS clips.)
   just_audio: ^0.10.5
+  audio_service: ^0.18.12
 
   # Stable client-generated session ids for X-Hermes-Session-Id continuity.
   uuid: ^4.5.1

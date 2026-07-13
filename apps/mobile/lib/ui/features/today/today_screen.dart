@@ -266,7 +266,8 @@ class _TodayScreenState extends State<TodayScreen> {
           ),
           child: ListView(
             key: ValueKey<TodayTimePeriod>(period),
-            padding: const EdgeInsets.fromLTRB(21, 6, 21, 24),
+            padding: EdgeInsets.fromLTRB(
+                21, MediaQuery.paddingOf(context).top + 6, 21, 24),
             children: bodyChildren,
           ),
         ),

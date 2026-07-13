@@ -35,13 +35,19 @@ class HomeShell extends StatelessWidget {
     final shell = context.watch<ShellController>();
     final reminders = context.watch<ReminderService>();
 
-    return Container(
-      decoration: BoxDecoration(gradient: atl.appBg),
-      child: Scaffold(
-        backgroundColor: Colors.transparent,
-        body: Stack(
+    return Scaffold(
+      backgroundColor: Colors.transparent,
+      extendBodyBehindAppBar: true,
+      extendBody: true,
+      body: Container(
+        decoration: BoxDecoration(gradient: atl.appBg),
+        child: Stack(
           children: [
             SafeArea(
+              // Today's own gradient is time-of-day tinted and needs to bleed
+              // behind the status bar/notch; other tabs rely on this SafeArea
+              // for their top inset instead.
+              top: shell.tab != AtlTab.today,
               child: AnimatedSwitcher(
                 duration: const Duration(milliseconds: 340),
                 switchInCurve: Curves.easeOutCubic,
@@ -69,13 +75,13 @@ class HomeShell extends StatelessWidget {
               ),
           ],
         ),
-        bottomNavigationBar: (shell.voiceOpen || reminders.ringingAlarm != null)
-            ? null
-            : const Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [MiniPlayer(), _AtlTabBar()],
-              ),
       ),
+      bottomNavigationBar: (shell.voiceOpen || reminders.ringingAlarm != null)
+          ? null
+          : const Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [MiniPlayer(), _AtlTabBar()],
+            ),
     );
   }
 }

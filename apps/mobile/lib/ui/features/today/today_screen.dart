@@ -8,6 +8,8 @@ import '../../../domain/models/calendar_event.dart';
 import '../../../domain/models/local_reminder.dart';
 import '../../core/animations.dart';
 import '../../core/atl_theme.dart';
+import '../automations/automations_screen.dart';
+import '../code/code_screen.dart';
 import '../email/email_view_model.dart';
 import '../music/music_screen.dart';
 import '../reminders/reminders_screen.dart';
@@ -222,6 +224,12 @@ class _TodayScreenState extends State<TodayScreen> {
       ));
       bodyChildren.add(const SizedBox(height: 17));
 
+      bodyChildren.add(FadeInUp(
+        delay: const Duration(milliseconds: 115),
+        child: _buildCodeCard(context, atl),
+      ));
+      bodyChildren.add(const SizedBox(height: 17));
+
       if (vm.loading || vm.upNext.isNotEmpty) {
         bodyChildren.add(FadeInUp(
           delay: const Duration(milliseconds: 140),
@@ -427,6 +435,9 @@ class _TodayScreenState extends State<TodayScreen> {
               MaterialPageRoute(builder: (_) => const MusicScreen()),
             );
           }),
+          _chip(atl, Icons.terminal_rounded, 'Code', () => openCodeScreen(context)),
+          _chip(atl, Icons.auto_awesome_outlined, 'Automations',
+              () => openAutomationsScreen(context)),
         ],
       ),
     );
@@ -521,6 +532,52 @@ class _TodayScreenState extends State<TodayScreen> {
                   const SizedBox(height: 3),
                   Text(
                     'Listen to soothing sounds and prepare for tomorrow.',
+                    style: atlSans(size: 12, color: atl.text2, height: 1.4),
+                  ),
+                ],
+              ),
+            ),
+            Icon(Icons.chevron_right, color: atl.text3, size: 20),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildCodeCard(BuildContext context, AtlColors atl) {
+    return Pressable(
+      onTap: () => openCodeScreen(context),
+      child: Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: atl.surface,
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: atl.hairline),
+          boxShadow: atl.cardShadow,
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 40,
+              height: 40,
+              decoration: BoxDecoration(
+                color: atl.accentSoft,
+                shape: BoxShape.circle,
+              ),
+              child: Icon(Icons.terminal_rounded, color: atl.accent, size: 20),
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Atlantic Dev',
+                    style: atlSans(size: 14, color: atl.text, weight: FontWeight.w600),
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    'Drive Claude Code on your projects from here.',
                     style: atlSans(size: 12, color: atl.text2, height: 1.4),
                   ),
                 ],

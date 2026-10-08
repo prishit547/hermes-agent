@@ -31,6 +31,9 @@ logger = logging.getLogger(__name__)
 
 DRAFTS_MAILBOX = "[Gmail]/Drafts"
 
+# Sent-mailbox names vary by provider; try these in order.
+SENT_MAILBOXES = ["[Gmail]/Sent Mail", "Sent", "Sent Items", "INBOX.Sent"]
+
 
 class GmailError(Exception):
     """Raised when email is unconfigured or an IMAP/SMTP call fails."""
@@ -63,11 +66,21 @@ def _require_config() -> Dict[str, Any]:
     return c
 
 
-def _imap(readonly: bool = True):
+def _imap(readonly: bool = True, mailbox: str = "INBOX"):
     c = _require_config()
     try:
         M = imaplib.IMAP4_SSL(c["imap_host"], c["imap_port"])
         M.login(c["address"], c["password"])
+        # For "sent" try the common Sent-folder names; otherwise select as given.
+        candidates = SENT_MAILBOXES if mailbox.lower() == "sent" else [mailbox]
+        for mb in candidates:
+            try:
+                typ, _ = M.select(mb, readonly=readonly)
+                if typ == "OK":
+                    return M
+            except Exception:
+                continue
+        # Never hard-fail on an unknown mailbox — fall back to INBOX.
         M.select("INBOX", readonly=readonly)
         return M
     except imaplib.IMAP4.error as exc:
@@ -142,6 +155,7 @@ def _header_summary(uid: bytes, info: bytes, hdr_bytes: bytes) -> Dict[str, Any]
         "id": uid.decode() if isinstance(uid, bytes) else str(uid),
         "thread_id": "",
         "from": _split_addr(_dh(msg.get("From", ""))),
+        "to": _dh(msg.get("To", "")),
         "subject": _dh(msg.get("Subject", "")),
         "date": msg.get("Date", ""),
         "snippet": "",
@@ -150,9 +164,16 @@ def _header_summary(uid: bytes, info: bytes, hdr_bytes: bytes) -> Dict[str, Any]
     }
 
 
-def list_messages(query: str = "is:unread", max_results: int = 20) -> List[Dict[str, Any]]:
-    """List INBOX messages (metadata), newest first. 'is:unread' → UNSEEN, else ALL."""
-    M = _imap(readonly=True)
+def list_messages(
+    query: str = "is:unread",
+    max_results: int = 20,
+    mailbox: str = "INBOX",
+) -> List[Dict[str, Any]]:
+    """List messages (metadata), newest first. 'is:unread' → UNSEEN, else ALL.
+
+    [mailbox] selects the IMAP folder ("INBOX" by default, or "sent" for the
+    Sent mailbox — resolved against common provider folder names)."""
+    M = _imap(readonly=True, mailbox=mailbox)
     try:
         criterion = "UNSEEN" if "unread" in (query or "").lower() else "ALL"
         typ, data = M.uid("search", None, criterion)
@@ -163,7 +184,7 @@ def list_messages(query: str = "is:unread", max_results: int = 20) -> List[Dict[
         for uid in uids:
             typ, d = M.uid(
                 "fetch", uid,
-                "(FLAGS BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE MESSAGE-ID)])",
+                "(FLAGS BODY.PEEK[HEADER.FIELDS (FROM TO SUBJECT DATE MESSAGE-ID)])",
             )
             if not d or not isinstance(d[0], tuple):
                 continue

@@ -8,6 +8,7 @@ import 'package:uuid/uuid.dart';
 import '../../../data/services/audio_service.dart';
 import '../../../data/services/voice_stream_service.dart';
 import '../../core/halo_orb.dart';
+import 'overlay/overlay_orb_controller.dart';
 
 /// Drives the Halo voice overlay as a **hands-free** loop over the realtime
 /// `/v1/voice/stream` WebSocket:
@@ -21,10 +22,23 @@ import '../../core/halo_orb.dart';
 class VoiceViewModel extends ChangeNotifier {
   static const _callChannel = MethodChannel('hermes/callkit');
 
-  VoiceViewModel(this._voice, this._audio);
+  // A public `overlay:` argument mapped to the private `_overlay` field; Dart
+  // forbids underscore-named parameters, so an initializing formal isn't usable.
+  // ignore: prefer_initializing_formals
+  VoiceViewModel(this._voice, this._audio, {OverlayOrbController? overlay}) : _overlay = overlay;
 
   final VoiceStreamService _voice;
   final AudioService _audio;
+
+  /// Android floating-orb overlay (null / no-op elsewhere).
+  final OverlayOrbController? _overlay;
+  bool _overlayShown = false;
+
+  /// Whether a floating overlay orb is possible on this platform.
+  bool get overlayAvailable => _overlay?.isSupported ?? false;
+
+  /// Whether the floating orb is currently showing.
+  bool get overlayShown => _overlayShown;
 
   final String _sessionId = 'voice-${const Uuid().v4()}';
 
@@ -48,8 +62,20 @@ class VoiceViewModel extends ChangeNotifier {
   bool _playing = false;
   bool _turnComplete = false;
 
+  /// Microphone is muted by the user while keeping the voice stream alive.
+  bool _muted = false;
+  bool get muted => _muted;
+
+  /// Current playback output route (speaker / earpiece / bluetooth).
+  AudioOutput get audioOutput => _audio.currentOutput;
+
   HaloState _state = HaloState.idle;
   HaloState get state => _state;
+
+  /// Normalized mic loudness (0..1) while listening, feeding the reactive orb.
+  /// Exposed as a [ValueNotifier] so the orb animates off amplitude ticks
+  /// (~5 Hz) without rebuilding the whole overlay via [notifyListeners].
+  final ValueNotifier<double> level = ValueNotifier(0);
 
   String _label = 'Connecting…';
   String get label => _label;
@@ -63,7 +89,45 @@ class VoiceViewModel extends ChangeNotifier {
     _state = s;
     _label = label;
     _transcript = transcript;
+    // The reactive glow only makes sense while the mic is open.
+    if (s != HaloState.listening) level.value = 0;
     notifyListeners();
+    _pushToOverlay();
+  }
+
+  // -- floating orb overlay ---------------------------------------------------
+
+  /// Whether "display over other apps" is already granted (no prompt).
+  Future<bool> hasOverlayPermission() async =>
+      await _overlay?.hasPermission() ?? false;
+
+  /// Request the "display over other apps" permission (Android only).
+  Future<bool> requestOverlayPermission() async =>
+      await _overlay?.requestPermission() ?? false;
+
+  /// Show the floating orb and start mirroring live voice state to it. Taps on
+  /// the overlay orb are routed back into [tapOrb].
+  Future<void> showOverlay() async {
+    if (_overlay == null || _overlayShown) return;
+    await _overlay.show(onTap: tapOrb);
+    _overlayShown = true;
+    level.addListener(_pushToOverlay);
+    _pushToOverlay();
+    notifyListeners();
+  }
+
+  /// Tear the floating orb down.
+  Future<void> hideOverlay() async {
+    if (_overlay == null || !_overlayShown) return;
+    level.removeListener(_pushToOverlay);
+    _overlayShown = false;
+    await _overlay.hide();
+    notifyListeners();
+  }
+
+  void _pushToOverlay() {
+    if (!_overlayShown) return;
+    _overlay?.pushState(state: _state, label: _label, amplitude: level.value);
   }
 
   // -- lifecycle --------------------------------------------------------------
@@ -88,6 +152,8 @@ class VoiceViewModel extends ChangeNotifier {
       _active = false;
       return;
     }
+    // Ensure the selected output route is active on the OS audio session.
+    await _audio.setOutput(_audio.currentOutput);
     await _startListening();
   }
 
@@ -106,6 +172,9 @@ class VoiceViewModel extends ChangeNotifier {
 
   void _onAmplitude(Amplitude amp) {
     if (_state != HaloState.listening) return;
+    // Map dBFS (~-60 silence … 0 loudest) → 0..1 for the reactive orb. The
+    // orb low-pass smooths this, so the raw per-tick target is fine here.
+    level.value = ((amp.current + 60.0) / 60.0).clamp(0.0, 1.0);
     final now = DateTime.now();
     if (amp.current > _speechOnsetDb) {
       _speechStarted = true;
@@ -113,7 +182,8 @@ class VoiceViewModel extends ChangeNotifier {
     }
     final elapsed = now.difference(_listenStart);
     if (_speechStarted) {
-      if (now.difference(_lastLoud) >= _silenceHang || elapsed >= _maxUtterance) {
+      if (now.difference(_lastLoud) >= _silenceHang ||
+          elapsed >= _maxUtterance) {
         _commitUtterance();
       }
     } else if (elapsed >= _preSpeechTimeout) {
@@ -149,7 +219,7 @@ class VoiceViewModel extends ChangeNotifier {
       case VoiceTranscript(:final text):
         if (text.trim().isEmpty) {
           // Nothing recognized — resume listening.
-          if (_active) _startListening();
+          if (_active && !_muted) _startListening();
         } else {
           _set(HaloState.thinking, 'Thinking…', '“$text”');
         }
@@ -163,15 +233,19 @@ class VoiceViewModel extends ChangeNotifier {
         _turnComplete = true;
         _maybeAdvance();
       case VoiceError(:final message):
-        _set(HaloState.idle, 'Error', message);
-        if (_active) {
+        _set(HaloState.error, 'Error', message);
+        if (_active && !_muted) {
           Future.delayed(const Duration(seconds: 2), () {
-            if (_active) _startListening();
+            if (_active && !_muted) _startListening();
           });
         }
       case VoiceClosed():
         if (_active) {
-          _set(HaloState.idle, 'Disconnected', 'Voice stream closed. Tap to retry.');
+          _set(
+            HaloState.idle,
+            'Disconnected',
+            'Voice stream closed. Tap to retry.',
+          );
         }
     }
   }
@@ -194,7 +268,7 @@ class VoiceViewModel extends ChangeNotifier {
   /// Once the turn is complete AND all queued TTS has played, loop back to
   /// listening (hands-free).
   void _maybeAdvance() {
-    if (!_active) return;
+    if (!_active || _muted) return;
     if (_turnComplete && !_playing && _ttsQueue.isEmpty) {
       _startListening();
     }
@@ -205,7 +279,10 @@ class VoiceViewModel extends ChangeNotifier {
   Future<void> tapOrb() async {
     switch (_state) {
       case HaloState.idle:
-        if (!_voice.isConnected) {
+      case HaloState.error:
+        if (_muted) {
+          await toggleMute();
+        } else if (!_voice.isConnected) {
           _active = false;
           await begin();
         } else {
@@ -228,10 +305,48 @@ class VoiceViewModel extends ChangeNotifier {
     }
   }
 
+  // -- in-call controls -------------------------------------------------------
+
+  /// Toggle microphone mute without tearing down the realtime stream.
+  Future<void> toggleMute() async {
+    if (_muted) {
+      _muted = false;
+      notifyListeners();
+      if (!_active) return;
+      if (_state == HaloState.speaking) {
+        _voice.bargeIn();
+        _ttsQueue.clear();
+        await _audio.stopPlayback();
+        _turnComplete = false;
+      }
+      if (_state == HaloState.idle || _state == HaloState.speaking) {
+        await _startListening();
+      }
+    } else {
+      _muted = true;
+      notifyListeners();
+      await _stopListening();
+      await _audio.cancel();
+      _set(HaloState.idle, 'Muted', 'Microphone is muted.');
+    }
+  }
+
+  /// Cycle the audio output route (speaker → earpiece → bluetooth when paired).
+  Future<void> cycleAudioOutput() async {
+    final routes = await _audio.availableOutputs();
+    if (routes.isEmpty) return;
+    final idx = routes.indexOf(_audio.currentOutput);
+    final next = routes[(idx + 1) % routes.length];
+    await _audio.setOutput(next);
+    notifyListeners();
+  }
+
   /// Called when the overlay closes.
   Future<void> reset() async {
     unawaited(_callChannel.invokeMethod('endCall'));
+    await hideOverlay();
     _active = false;
+    _muted = false;
     await _stopListening();
     await _audio.cancel();
     await _audio.stopPlayback();
@@ -248,6 +363,8 @@ class VoiceViewModel extends ChangeNotifier {
   void dispose() {
     _ampSub?.cancel();
     _eventSub?.cancel();
+    level.removeListener(_pushToOverlay);
+    level.dispose();
     super.dispose();
   }
 }

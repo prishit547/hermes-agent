@@ -164,7 +164,13 @@ def synthesize_speech(text: str) -> Tuple[bytes, str, Optional[str]]:
     if not text:
         raise AudioRequestError(400, "Text is required")
 
-    from tools.tts_tool import text_to_speech_tool
+    from tools.tts_tool import text_to_speech_tool, _strip_markdown_for_tts
+
+    # Single chokepoint for both mobile audio paths (realtime voice orb and
+    # chat auto-speak). Strip markdown so the TTS never voices asterisks,
+    # bullets, headers, etc. The model-invoked text_to_speech_tool (Telegram/
+    # CLI voice memos) is intentionally left to keep the model's literal text.
+    text = _strip_markdown_for_tts(text) or text
 
     try:
         result_json = text_to_speech_tool(text)

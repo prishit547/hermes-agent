@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import 'atl_tokens.dart';
+
 /// Wraps a tappable child with a subtle press-scale for tactile feedback —
 /// the child dips to [scale] while pressed and springs back on release.
 /// Used across cards, chips, and buttons so every tap feels physical.
@@ -34,8 +36,8 @@ class _PressableState extends State<Pressable> {
       onTapCancel: widget.onTap == null ? null : () => setState(() => _down = false),
       child: AnimatedScale(
         scale: _down ? widget.scale : 1.0,
-        duration: const Duration(milliseconds: 110),
-        curve: Curves.easeOut,
+        duration: AtlMotion.fast,
+        curve: AtlMotion.enterCurve,
         child: widget.child,
       ),
     );

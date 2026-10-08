@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/atl_theme.dart';
+import '../../core/atl_tokens.dart';
 import '../calendar/calendar_screen.dart';
 import '../chat/views/chat_screen.dart';
 import '../../../../data/services/notification_service.dart';
@@ -49,9 +50,9 @@ class HomeShell extends StatelessWidget {
               // for their top inset instead.
               top: shell.tab != AtlTab.today,
               child: AnimatedSwitcher(
-                duration: const Duration(milliseconds: 340),
-                switchInCurve: Curves.easeOutCubic,
-                switchOutCurve: Curves.easeIn,
+                duration: AtlMotion.slow,
+                switchInCurve: AtlMotion.enterCurve,
+                switchOutCurve: AtlMotion.exitCurve,
                 transitionBuilder: (child, animation) => FadeTransition(
                   opacity: animation,
                   child: SlideTransition(

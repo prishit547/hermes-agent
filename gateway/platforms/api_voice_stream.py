@@ -233,6 +233,10 @@ class VoiceStreamHandler:
                 stream_delta_callback=_on_delta,
                 agent_ref=agent_ref,
                 gateway_session_key=session_id,
+                # Spoken personal-assistant persona (concise, no markdown,
+                # summarizes tool results). Toolset is unchanged — see
+                # _create_agent: enabled_toolsets stays on "api_server".
+                platform="api_voice",
             )
         )
         agent_task.add_done_callback(

@@ -15,7 +15,7 @@ class HermesConnectionService : ConnectionService() {
         request: ConnectionRequest?
     ): Connection {
         val conn = HermesCallConnection()
-        conn.initializing()
+        conn.setInitializing()
         conn.setActive()
         return conn
     }
@@ -25,7 +25,7 @@ class HermesConnectionService : ConnectionService() {
         request: ConnectionRequest?
     ): Connection {
         val conn = HermesCallConnection()
-        conn.initializing()
+        conn.setInitializing()
         conn.setActive()
         return conn
     }

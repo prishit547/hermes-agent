@@ -17,8 +17,8 @@ class MusicViewModel extends ChangeNotifier {
   MusicViewModel({
     required MusicRepository repository,
     required MusicPlayerService playerService,
-  })  : _repo = repository,
-        _svc = playerService {
+  }) : _repo = repository,
+       _svc = playerService {
     _sub.addAll([
       _svc.onPosition.listen(_onPosition),
       _svc.onDuration.listen((d) {
@@ -190,12 +190,14 @@ class MusicViewModel extends ChangeNotifier {
   Future<void> next() async {
     final outgoing = current;
     if (outgoing != null) {
-      unawaited(_repo.feedback(
-        track: outgoing,
-        event: 'skipped',
-        playedFraction: _playedFraction,
-        position: _position.inSeconds.toDouble(),
-      ));
+      unawaited(
+        _repo.feedback(
+          track: outgoing,
+          event: 'skipped',
+          playedFraction: _playedFraction,
+          position: _position.inSeconds.toDouble(),
+        ),
+      );
     }
     await _guard(() async => _applySnapshot(await _repo.control('next')));
   }
@@ -205,7 +207,10 @@ class MusicViewModel extends ChangeNotifier {
   }
 
   Future<void> playIndex(int index) async {
-    await _guard(() async => _applySnapshot(await _repo.control('play-index', index: index)));
+    await _guard(
+      () async =>
+          _applySnapshot(await _repo.control('play-index', index: index)),
+    );
   }
 
   Future<void> seekTo(double seconds) async {
@@ -262,12 +267,16 @@ class MusicViewModel extends ChangeNotifier {
     } catch (_) {}
   }
 
-  static bool _samePlaylists(List<Map<String, dynamic>> a, List<Map<String, dynamic>> b) {
+  static bool _samePlaylists(
+    List<Map<String, dynamic>> a,
+    List<Map<String, dynamic>> b,
+  ) {
     if (a.length != b.length) return false;
     for (var i = 0; i < a.length; i++) {
       if (a[i]['id'] != b[i]['id'] ||
           a[i]['name'] != b[i]['name'] ||
-          (a[i]['tracks'] as List?)?.length != (b[i]['tracks'] as List?)?.length) {
+          (a[i]['tracks'] as List?)?.length !=
+              (b[i]['tracks'] as List?)?.length) {
         return false;
       }
     }
@@ -287,7 +296,9 @@ class MusicViewModel extends ChangeNotifier {
   }
 
   Future<void> playPlaylist(String playlistId) async {
-    await _guard(() async => _applySnapshot(await _repo.playPlaylist(playlistId)));
+    await _guard(
+      () async => _applySnapshot(await _repo.playPlaylist(playlistId)),
+    );
   }
 
   Future<void> recommendMore() async {
@@ -316,6 +327,10 @@ class MusicViewModel extends ChangeNotifier {
   void _applySnapshot(PlayerSnapshot snap) {
     _snapshot = snap;
     _syncPolling();
+    _svc.setQueueContext(
+      hasNext: snap.queue.isNotEmpty,
+      hasPrev: snap.index > 0,
+    );
     if (snap.hasTrack && snap.videoId != null) {
       if (snap.videoId != _streamingId) {
         _streamingId = snap.videoId;
@@ -339,7 +354,9 @@ class MusicViewModel extends ChangeNotifier {
     notifyListeners();
     try {
       await _svc.playUrl(videoId, _repo.streamUri(videoId), track: track);
-      if (track != null) unawaited(_repo.feedback(track: track, event: 'played'));
+      if (track != null) {
+        unawaited(_repo.feedback(track: track, event: 'played'));
+      }
     } catch (e) {
       // Only report if this is still the track we're trying to play.
       if (_streamingId == videoId) {
@@ -372,7 +389,13 @@ class MusicViewModel extends ChangeNotifier {
     }
     final finished = current;
     if (finished != null) {
-      unawaited(_repo.feedback(track: finished, event: 'completed', playedFraction: 1.0));
+      unawaited(
+        _repo.feedback(
+          track: finished,
+          event: 'completed',
+          playedFraction: 1.0,
+        ),
+      );
     }
     // Advance the server queue and stream whatever comes next.
     try {
@@ -394,7 +417,8 @@ class MusicViewModel extends ChangeNotifier {
   }
 
   void _handleApiError(HermesApiException e) {
-    if (e.statusCode == 503 || e.message.toLowerCase().contains('unavailable')) {
+    if (e.statusCode == 503 ||
+        e.message.toLowerCase().contains('unavailable')) {
       _notConnected = true;
     } else {
       _error = e.message;

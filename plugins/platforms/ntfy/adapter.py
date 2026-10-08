@@ -495,6 +495,7 @@ async def _standalone_send(
     thread_id: Optional[str] = None,
     media_files: Optional[List[str]] = None,
     force_document: bool = False,
+    title: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Out-of-process publish for cron / send_message_tool fallbacks.
 
@@ -506,7 +507,9 @@ async def _standalone_send(
     ``thread_id`` and ``media_files`` are accepted for signature parity
     only — ntfy has no thread or attachment primitive. Markdown is
     honored if ``NTFY_MARKDOWN`` is set OR ``pconfig.extra["markdown"]``
-    is True.
+    is True. ``title`` sets ntfy's ``X-Title`` header when provided
+    (defaults to none, matching prior behavior, so existing callers are
+    unaffected).
     """
     if not HTTPX_AVAILABLE:
         return {"error": "ntfy standalone send: httpx not installed"}
@@ -531,6 +534,8 @@ async def _standalone_send(
     markdown_enabled = bool(extra.get("markdown")) or markdown_env in ("1", "true", "yes")
 
     headers = {"Content-Type": "text/plain; charset=utf-8", "X-Tags": _ECHO_TAG, **_build_auth_header(token)}
+    if title:
+        headers["X-Title"] = title
     if markdown_enabled:
         headers["X-Markdown"] = "true"
 

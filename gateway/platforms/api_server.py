@@ -1241,6 +1241,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_complete_callback=None,
         gateway_session_key: Optional[str] = None,
         route: Optional[Dict[str, Any]] = None,
+        platform: str = "api_server",
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -1334,6 +1335,10 @@ class APIServerAdapter(BasePlatformAdapter):
             )
 
         user_config = _load_gateway_config()
+        # Toolsets always resolve on "api_server" regardless of the persona
+        # ``platform`` (e.g. "api_voice"): voice must keep the full toolset
+        # (email, calendar, …) so requests like "check my email" still work.
+        # Only the platform *hint* (spoken-style persona) varies by ``platform``.
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
 
         max_iterations = _current_max_iterations()
@@ -1351,7 +1356,7 @@ class APIServerAdapter(BasePlatformAdapter):
             ephemeral_system_prompt=ephemeral_system_prompt or None,
             enabled_toolsets=enabled_toolsets,
             session_id=session_id,
-            platform="api_server",
+            platform=platform,
             stream_delta_callback=stream_delta_callback,
             tool_progress_callback=tool_progress_callback,
             tool_start_callback=tool_start_callback,
@@ -2079,6 +2084,9 @@ class APIServerAdapter(BasePlatformAdapter):
         if auth_err:
             return auth_err
         query = request.query.get("q") or "is:unread"
+        # Optional mailbox selector: "sent" reads the Sent folder; default INBOX.
+        folder = (request.query.get("folder") or "inbox").strip().lower()
+        mailbox = "sent" if folder == "sent" else "INBOX"
         try:
             limit = self._parse_nonnegative_int(request.query.get("max"), default=20, maximum=50)
         except Exception:
@@ -2087,10 +2095,13 @@ class APIServerAdapter(BasePlatformAdapter):
             from tools import gmail_core
             loop = asyncio.get_running_loop()
             msgs = await loop.run_in_executor(
-                None, lambda: gmail_core.list_messages(query=query, max_results=limit))
+                None,
+                lambda: gmail_core.list_messages(
+                    query=query, max_results=limit, mailbox=mailbox))
         except Exception as exc:
             return self._email_error(exc)
-        return web.json_response({"object": "list", "query": query, "messages": msgs})
+        return web.json_response(
+            {"object": "list", "query": query, "folder": folder, "messages": msgs})
 
     async def _handle_email_get(self, request: "web.Request") -> "web.Response":
         """GET /api/email/messages/{id} — full message with body."""
@@ -2240,6 +2251,203 @@ class APIServerAdapter(BasePlatformAdapter):
                 status=500,
             )
         return web.json_response({"object": "email.draft", "draft": draft_text.strip()})
+
+    # ------------------------------------------------------------------
+    # Atlantic Dev — Claude Code sessions (/api/code/*)
+    #
+    # Drives the locally-installed ``claude`` CLI (headless stream-json) against
+    # whitelisted local repos (config ``claude_code.projects``). The allow-list
+    # is the trust boundary. See gateway/claude_code/manager.py.
+    # ------------------------------------------------------------------
+    def _claude_code_mgr(self):
+        from gateway.claude_code import get_manager
+        mgr = get_manager()
+        mgr.ensure_usage_poller_started()
+        return mgr
+
+    async def _handle_code_projects(self, request: "web.Request") -> "web.Response":
+        """GET /api/code/projects — whitelisted repos + git summary."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        try:
+            projects = await self._claude_code_mgr().list_projects()
+        except Exception as exc:
+            return web.json_response(_openai_error(f"failed to list projects: {exc}"), status=500)
+        return web.json_response({"projects": projects})
+
+    async def _handle_code_sessions_list(self, request: "web.Request") -> "web.Response":
+        """GET /api/code/sessions — active Claude Code sessions."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        return web.json_response({"sessions": self._claude_code_mgr().list_sessions()})
+
+    async def _handle_code_session_create(self, request: "web.Request") -> "web.Response":
+        """POST /api/code/sessions {project, permission_mode?, title?}."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+        project = str(body.get("project") or "").strip()
+        if not project:
+            return web.json_response(_openai_error("'project' is required"), status=400)
+        try:
+            sess = await self._claude_code_mgr().create_session(
+                project, permission_mode=body.get("permission_mode"), title=str(body.get("title") or ""))
+        except ValueError as exc:
+            return web.json_response(_openai_error(str(exc), code="unknown_project"), status=404)
+        return web.json_response(sess.to_dict())
+
+    async def _handle_code_session_get(self, request: "web.Request") -> "web.Response":
+        """GET /api/code/sessions/{id}."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        sess = self._claude_code_mgr().get_session(request.match_info["session_id"])
+        if sess is None:
+            return web.json_response(_openai_error("unknown session", code="not_found"), status=404)
+        return web.json_response(sess.to_dict())
+
+    async def _handle_code_session_delete(self, request: "web.Request") -> "web.Response":
+        """DELETE /api/code/sessions/{id}."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        existed = await self._claude_code_mgr().delete_session(request.match_info["session_id"])
+        return web.json_response({"deleted": existed})
+
+    async def _handle_code_interrupt(self, request: "web.Request") -> "web.Response":
+        """POST /api/code/sessions/{id}/interrupt — kill the in-flight turn."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        ok = await self._claude_code_mgr().interrupt(request.match_info["session_id"])
+        return web.json_response({"interrupted": ok})
+
+    async def _handle_code_usage(self, request: "web.Request") -> "web.Response":
+        """GET /api/code/usage — cumulative usage + session/weekly limit status
+        (from the CLI's free `/usage` polling — see ClaudeCodeManager)."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        return web.json_response(self._claude_code_mgr().usage_snapshot())
+
+    async def _handle_code_usage_refresh(self, request: "web.Request") -> "web.Response":
+        """POST /api/code/usage/refresh — force an immediate `/usage` check.
+        Zero-cost (no model call), safe to trigger on demand from the phone."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        snapshot = await self._claude_code_mgr().refresh_usage()
+        return web.json_response(snapshot)
+
+    async def _handle_code_diff(self, request: "web.Request") -> "web.Response":
+        """GET /api/code/sessions/{id}/diff — working-tree diff for review."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        try:
+            diff = await self._claude_code_mgr().git_diff(request.match_info["session_id"])
+        except ValueError as exc:
+            return web.json_response(_openai_error(str(exc), code="not_found"), status=404)
+        return web.json_response(diff)
+
+    async def _handle_code_commit(self, request: "web.Request") -> "web.Response":
+        """POST /api/code/sessions/{id}/commit {message, push?} — gated: only
+        reached on an explicit phone tap (the irreversible/outward step)."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+        message = str(body.get("message") or "").strip()
+        if not message:
+            return web.json_response(_openai_error("'message' is required"), status=400)
+        try:
+            result = await self._claude_code_mgr().commit(
+                request.match_info["session_id"], message, push=bool(body.get("push")))
+        except ValueError as exc:
+            return web.json_response(_openai_error(str(exc), code="not_found"), status=404)
+        return web.json_response(result)
+
+    async def _handle_code_permission(self, request: "web.Request") -> "web.Response":
+        """POST /api/code/sessions/{id}/permission {tool_use_id, decision, message?}
+        — resolve a pending per-action approval (approve mode)."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+        tool_use_id = str(body.get("tool_use_id") or "").strip()
+        if not tool_use_id:
+            return web.json_response(_openai_error("'tool_use_id' is required"), status=400)
+        decision = str(body.get("decision") or "").strip().lower()
+        allow = decision in ("allow", "approve", "yes", "true")
+        ok = self._claude_code_mgr().resolve_permission(
+            request.match_info["session_id"], tool_use_id, allow, str(body.get("message") or ""))
+        return web.json_response({"resolved": ok, "allow": allow})
+
+    async def _handle_code_pr(self, request: "web.Request") -> "web.Response":
+        """POST /api/code/sessions/{id}/pr {title?, body?, push?} — push + open a
+        PR via ``gh``. Gated: only reached on an explicit phone tap."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+        try:
+            result = await self._claude_code_mgr().open_pr(
+                request.match_info["session_id"],
+                title=str(body.get("title") or ""),
+                body=str(body.get("body") or ""),
+                push=bool(body.get("push", True)))
+        except ValueError as exc:
+            return web.json_response(_openai_error(str(exc), code="not_found"), status=404)
+        return web.json_response(result)
+
+    async def _handle_code_message_stream(self, request: "web.Request") -> "web.StreamResponse":
+        """POST /api/code/sessions/{id}/message/stream {message, permission_mode?}
+        — SSE of one Claude Code turn (mirrors the session chat stream shape)."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        session_id = request.match_info["session_id"]
+        mgr = self._claude_code_mgr()
+        if mgr.get_session(session_id) is None:
+            return web.json_response(_openai_error("unknown session", code="not_found"), status=404)
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+        message = str(body.get("message") or "").strip()
+        if not message:
+            return web.json_response(_openai_error("'message' is required"), status=400)
+        mode = body.get("permission_mode")
+
+        headers = {
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        }
+        response = web.StreamResponse(status=200, headers=headers)
+        await response.prepare(request)
+        try:
+            async for ev in mgr.stream_turn(session_id, message, permission_mode=mode):
+                name = ev.get("type", "message")
+                data = json.dumps(ev, ensure_ascii=False)
+                await response.write(f"event: {name}\ndata: {data}\n\n".encode("utf-8"))
+            await response.write(b"event: done\ndata: {}\n\n")
+        except (asyncio.CancelledError, ConnectionResetError):
+            await mgr.interrupt(session_id)
+            raise
+        except Exception as exc:
+            logger.debug("[api_server] code stream error: %s", exc)
+        return response
 
     async def _handle_calendar_events(self, request: "web.Request") -> "web.Response":
         """GET /api/calendar/events?days=14 — upcoming events, structured + FAST.
@@ -5260,6 +5468,7 @@ class APIServerAdapter(BasePlatformAdapter):
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
         route: Optional[Dict[str, Any]] = None,
+        platform: str = "api_server",
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -5296,6 +5505,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     tool_complete_callback=tool_complete_callback,
                     gateway_session_key=gateway_session_key,
                     route=route,
+                    platform=platform,
                 )
                 if agent_ref is not None:
                     agent_ref[0] = agent
@@ -6077,6 +6287,20 @@ class APIServerAdapter(BasePlatformAdapter):
                 self._app.router.add_post(f"/api/music/{_mv}", self._handle_music_control)
             # Calendar events — direct (fast) read, no agent turn.
             self._app.router.add_get("/api/calendar/events", self._handle_calendar_events)
+            # Atlantic Dev — drive the local ``claude`` CLI on whitelisted repos.
+            self._app.router.add_get("/api/code/projects", self._handle_code_projects)
+            self._app.router.add_get("/api/code/usage", self._handle_code_usage)
+            self._app.router.add_post("/api/code/usage/refresh", self._handle_code_usage_refresh)
+            self._app.router.add_get("/api/code/sessions", self._handle_code_sessions_list)
+            self._app.router.add_post("/api/code/sessions", self._handle_code_session_create)
+            self._app.router.add_get("/api/code/sessions/{session_id}", self._handle_code_session_get)
+            self._app.router.add_delete("/api/code/sessions/{session_id}", self._handle_code_session_delete)
+            self._app.router.add_post("/api/code/sessions/{session_id}/message/stream", self._handle_code_message_stream)
+            self._app.router.add_post("/api/code/sessions/{session_id}/interrupt", self._handle_code_interrupt)
+            self._app.router.add_post("/api/code/sessions/{session_id}/permission", self._handle_code_permission)
+            self._app.router.add_get("/api/code/sessions/{session_id}/diff", self._handle_code_diff)
+            self._app.router.add_post("/api/code/sessions/{session_id}/commit", self._handle_code_commit)
+            self._app.router.add_post("/api/code/sessions/{session_id}/pr", self._handle_code_pr)
 
             # Chronos managed-cron fire webhook (NAS → agent). Authenticated by a
             # NAS-minted JWT (NOT API_SERVER_KEY), so it has its own auth path.

@@ -40,7 +40,7 @@ class MiniPlayer extends StatelessWidget {
           children: [
             Row(
               children: [
-                _Art(url: track.thumbnail, size: 46, radius: 0),
+                MusicArt(url: track.thumbnail, size: 46, radius: 0),
                 const SizedBox(width: 11),
                 Expanded(
                   child: Column(
@@ -79,37 +79,5 @@ class MiniPlayer extends StatelessWidget {
         ),
       ),
     );
-  }
-}
-
-/// Album/thumbnail art with a graceful fallback to a music glyph.
-class _Art extends StatelessWidget {
-  const _Art({required this.url, required this.size, this.radius = 10});
-  final String url;
-  final double size;
-  final double radius;
-
-  @override
-  Widget build(BuildContext context) {
-    final atl = context.atl;
-    Widget fallback = Container(
-      width: size,
-      height: size,
-      color: atl.surface2,
-      alignment: Alignment.center,
-      child: Icon(Icons.music_note, size: size * 0.5, color: atl.text3),
-    );
-    final child = url.isEmpty
-        ? fallback
-        : Image.network(
-            url,
-            width: size,
-            height: size,
-            fit: BoxFit.cover,
-            errorBuilder: (_, _, _) => fallback,
-          );
-    return radius > 0
-        ? ClipRRect(borderRadius: BorderRadius.circular(radius), child: child)
-        : child;
   }
 }

@@ -21,7 +21,7 @@ class InboxScreen extends StatefulWidget {
   State<InboxScreen> createState() => _InboxScreenState();
 }
 
-enum _Filter { all, unread, read, alerts }
+enum _Filter { all, unread, read, sent, alerts }
 
 class _InboxScreenState extends State<InboxScreen> {
   _Filter _filterSel = _Filter.all;
@@ -48,7 +48,8 @@ class _InboxScreenState extends State<InboxScreen> {
     final count = _notifications?.inbox.length ?? 0;
     if (count > _lastInboxLength) {
       _lastInboxLength = count;
-      context.read<EmailViewModel>().load();
+      // Throttled: a burst of pushes won't hammer the gateway with refetches.
+      context.read<EmailViewModel>().refreshIfStale();
     }
   }
 
@@ -59,7 +60,7 @@ class _InboxScreenState extends State<InboxScreen> {
     super.dispose();
   }
 
-  Future<void> _refresh() => context.read<EmailViewModel>().load();
+  Future<void> _refresh() => context.read<EmailViewModel>().refresh();
 
   @override
   Widget build(BuildContext context) {
@@ -67,7 +68,10 @@ class _InboxScreenState extends State<InboxScreen> {
     final email = context.watch<EmailViewModel>();
     final alerts = context.watch<NotificationService>().inbox;
 
-    final showEmail = _filterSel == _Filter.all || _filterSel == _Filter.unread || _filterSel == _Filter.read;
+    final showEmail = _filterSel == _Filter.all ||
+        _filterSel == _Filter.unread ||
+        _filterSel == _Filter.read ||
+        _filterSel == _Filter.sent;
     final showAlerts = _filterSel == _Filter.all || _filterSel == _Filter.alerts;
 
     return RefreshIndicator(
@@ -76,15 +80,25 @@ class _InboxScreenState extends State<InboxScreen> {
         padding: const EdgeInsets.fromLTRB(20, 4, 20, 24),
         children: [
           Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('Inbox', style: atlSerif(size: 30, color: atl.text)),
-              Row(
-                children: [
+              Padding(
+                padding: const EdgeInsets.only(top: 2),
+                child: Text('Inbox', style: atlSerif(size: 30, color: atl.text)),
+              ),
+              const SizedBox(width: 12),
+              // A Wrap so the action pills flow onto a second line on narrow
+              // screens instead of overflowing the header row.
+              Expanded(
+                child: Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  alignment: WrapAlignment.end,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
                   GestureDetector(
                     onTap: () => setState(() => _digestMode = !_digestMode),
                     child: Container(
-                      margin: const EdgeInsets.only(right: 8),
                       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                       decoration: BoxDecoration(
                         color: _digestMode ? atl.accentSoft : atl.surface2,
@@ -118,7 +132,6 @@ class _InboxScreenState extends State<InboxScreen> {
                         email.markAllRead();
                       },
                       child: Container(
-                         margin: const EdgeInsets.only(right: 8),
                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                          decoration: BoxDecoration(
                            color: atl.accentSoft,
@@ -139,21 +152,29 @@ class _InboxScreenState extends State<InboxScreen> {
                       child: Text('${email.unreadCount} unread',
                           style: atlSans(size: 12, color: atl.text2, weight: FontWeight.w600)),
                     ),
-                ],
+                  ],
+                ),
               ),
             ],
           ),
           const SizedBox(height: 14),
-          Row(
-            children: [
-              _filterChip(atl, 'All', _Filter.all),
-              const SizedBox(width: 8),
-              _filterChip(atl, 'Unread Mails', _Filter.unread),
-              const SizedBox(width: 8),
-              _filterChip(atl, 'Read Mails', _Filter.read),
-              const SizedBox(width: 8),
-              _filterChip(atl, 'Alerts', _Filter.alerts),
-            ],
+          // Horizontally scrollable so the 5 chips never overflow narrow screens.
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            physics: const BouncingScrollPhysics(),
+            child: Row(
+              children: [
+                _filterChip(atl, 'All', _Filter.all),
+                const SizedBox(width: 8),
+                _filterChip(atl, 'Unread', _Filter.unread),
+                const SizedBox(width: 8),
+                _filterChip(atl, 'Read', _Filter.read),
+                const SizedBox(width: 8),
+                _filterChip(atl, 'Sent', _Filter.sent),
+                const SizedBox(width: 8),
+                _filterChip(atl, 'Alerts', _Filter.alerts),
+              ],
+            ),
           ),
           const SizedBox(height: 20),
 
@@ -217,11 +238,12 @@ class _InboxScreenState extends State<InboxScreen> {
                 for (final entry in email.categoryDigests.entries)
                   _categoryCard(atl, entry.key, entry.value),
               ] else ...[
-                _label(atl, _filterSel == _Filter.read
-                    ? 'Read Mails'
-                    : _filterSel == _Filter.unread
-                        ? 'Unread Mails'
-                        : 'All Mails'),
+                _label(atl, switch (_filterSel) {
+                  _Filter.read => 'Read Mails',
+                  _Filter.unread => 'Unread Mails',
+                  _Filter.sent => 'Sent Mails',
+                  _ => 'All Mails',
+                }),
                 for (final m in email.messages)
                   FadeInUp(
                     key: ValueKey(m.id),
@@ -233,7 +255,9 @@ class _InboxScreenState extends State<InboxScreen> {
             ] else if (_filterSel == _Filter.unread)
               _emptyHint(atl, 'No unread email. You’re all caught up.')
             else if (_filterSel == _Filter.read)
-              _emptyHint(atl, 'No read email found.'),
+              _emptyHint(atl, 'No read email found.')
+            else if (_filterSel == _Filter.sent)
+              _emptyHint(atl, 'No sent email found.'),
           ],
 
           // Alerts section (ntfy activity)
@@ -261,11 +285,13 @@ class _InboxScreenState extends State<InboxScreen> {
           final emailVM = context.read<EmailViewModel>();
           emailVM.setSearchQuery('');
           if (value == _Filter.all) {
-            emailVM.setTabIndex(0);
+            emailVM.setTabIndex(EmailViewModel.tabAll);
           } else if (value == _Filter.unread) {
-            emailVM.setTabIndex(1);
+            emailVM.setTabIndex(EmailViewModel.tabUnread);
           } else if (value == _Filter.read) {
-            emailVM.setTabIndex(2);
+            emailVM.setTabIndex(EmailViewModel.tabRead);
+          } else if (value == _Filter.sent) {
+            emailVM.setTabIndex(EmailViewModel.tabSent);
           }
         }
       },
@@ -292,6 +318,17 @@ class _InboxScreenState extends State<InboxScreen> {
                 size: 12, color: atl.text2, weight: FontWeight.w600, letterSpacing: 1)),
       );
 
+  /// The party shown on a row: the sender for received mail, the recipient for
+  /// Sent mail. Parses a display name out of a raw `Name <email>` To header.
+  String _partyName(EmailMessage m) {
+    if (_filterSel != _Filter.sent) return m.from.display;
+    final to = (m.to ?? '').trim();
+    if (to.isEmpty) return '(no recipient)';
+    final lt = to.indexOf('<');
+    final name = lt > 0 ? to.substring(0, lt).trim().replaceAll('"', '') : to;
+    return name.isNotEmpty ? name : to;
+  }
+
   Widget _emailCard(AtlColors atl, EmailMessage m) => Pressable(
         onTap: () => openEmail(context, m),
         child: Container(
@@ -315,7 +352,7 @@ class _InboxScreenState extends State<InboxScreen> {
                   borderRadius: BorderRadius.circular(11),
                 ),
                 child: Text(
-                  (m.from.display.isNotEmpty ? m.from.display[0] : '?').toUpperCase(),
+                  (_partyName(m).isNotEmpty ? _partyName(m)[0] : '?').toUpperCase(),
                   style: atlSans(size: 15, color: atl.accent, weight: FontWeight.w600),
                 ),
               ),
@@ -327,7 +364,10 @@ class _InboxScreenState extends State<InboxScreen> {
                     Row(
                       children: [
                         Expanded(
-                          child: Text(m.from.display,
+                          child: Text(
+                              _filterSel == _Filter.sent
+                                  ? 'To: ${_partyName(m)}'
+                                  : _partyName(m),
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                               style: atlSans(
@@ -533,7 +573,7 @@ class _InboxScreenState extends State<InboxScreen> {
             shrinkWrap: true,
             physics: const NeverScrollableScrollPhysics(),
             itemCount: list.length,
-            separatorBuilder: (_, __) => Divider(height: 1, color: atl.divider),
+            separatorBuilder: (_, _) => Divider(height: 1, color: atl.divider),
             itemBuilder: (context, idx) {
               final m = list[idx];
               return Padding(

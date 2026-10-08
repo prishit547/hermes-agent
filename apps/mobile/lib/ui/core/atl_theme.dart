@@ -27,6 +27,7 @@ class AtlColors extends ThemeExtension<AtlColors> {
     required this.userBubble,
     required this.userInk,
     required this.cardShadow,
+    required this.elevatedShadow,
   });
 
   /// Radial app background (a gradient in the source).
@@ -50,7 +51,12 @@ class AtlColors extends ThemeExtension<AtlColors> {
   /// User chat bubble — a gradient in dark, a flat color in light.
   final Gradient userBubble;
   final Color userInk;
+
+  /// Resting elevation for cards/surfaces.
   final List<BoxShadow> cardShadow;
+
+  /// Higher elevation for sheets, modals, and floating surfaces.
+  final List<BoxShadow> elevatedShadow;
 
   /// The signature Halo orb gradient stops (cyan → lilac → pink), theme-agnostic.
   static const halo1 = Color(0xFF8FE9FF);
@@ -91,7 +97,24 @@ class AtlColors extends ThemeExtension<AtlColors> {
       colors: [Color(0xFFAEB2FF), Color(0xFFC9B8FF)],
     ),
     userInk: Color(0xFF111018),
-    cardShadow: [],
+    // A tight, low-alpha shadow so cards lift off the near-black background
+    // instead of relying solely on the 1px hairline for separation.
+    cardShadow: [
+      BoxShadow(
+        color: Color(0x59000000),
+        blurRadius: 18,
+        offset: Offset(0, 8),
+        spreadRadius: -10,
+      ),
+    ],
+    elevatedShadow: [
+      BoxShadow(
+        color: Color(0x80000000),
+        blurRadius: 36,
+        offset: Offset(0, 18),
+        spreadRadius: -12,
+      ),
+    ],
   );
 
   static const light = AtlColors(
@@ -126,6 +149,14 @@ class AtlColors extends ThemeExtension<AtlColors> {
         spreadRadius: -10,
       ),
     ],
+    elevatedShadow: [
+      BoxShadow(
+        color: Color(0x291E1E3C),
+        blurRadius: 40,
+        offset: Offset(0, 20),
+        spreadRadius: -16,
+      ),
+    ],
   );
 
   /// The pearlescent orb sphere gradient (shared by both themes).
@@ -139,7 +170,29 @@ class AtlColors extends ThemeExtension<AtlColors> {
   @override
   AtlColors lerp(ThemeExtension<AtlColors>? other, double t) {
     if (other is! AtlColors) return this;
-    return t < 0.5 ? this : other;
+    return AtlColors(
+      appBg: Gradient.lerp(appBg, other.appBg, t)!,
+      surface: Color.lerp(surface, other.surface, t)!,
+      elevated: Color.lerp(elevated, other.elevated, t)!,
+      surface2: Color.lerp(surface2, other.surface2, t)!,
+      hairline: Color.lerp(hairline, other.hairline, t)!,
+      divider: Color.lerp(divider, other.divider, t)!,
+      text: Color.lerp(text, other.text, t)!,
+      text2: Color.lerp(text2, other.text2, t)!,
+      text3: Color.lerp(text3, other.text3, t)!,
+      accent: Color.lerp(accent, other.accent, t)!,
+      accentSoft: Color.lerp(accentSoft, other.accentSoft, t)!,
+      accentInk: Color.lerp(accentInk, other.accentInk, t)!,
+      frost: Color.lerp(frost, other.frost, t)!,
+      navInactive: Color.lerp(navInactive, other.navInactive, t)!,
+      homeInd: Color.lerp(homeInd, other.homeInd, t)!,
+      fieldBorder: Color.lerp(fieldBorder, other.fieldBorder, t)!,
+      userBubble: Gradient.lerp(userBubble, other.userBubble, t)!,
+      userInk: Color.lerp(userInk, other.userInk, t)!,
+      cardShadow: BoxShadow.lerpList(cardShadow, other.cardShadow, t)!,
+      elevatedShadow:
+          BoxShadow.lerpList(elevatedShadow, other.elevatedShadow, t)!,
+    );
   }
 }
 
@@ -211,3 +264,43 @@ TextStyle atlSans({
       letterSpacing: letterSpacing,
       decoration: decoration,
     );
+
+/// Named type roles — the app's typographic scale.
+///
+/// Prefer these over ad-hoc `atlSans(size: 15, weight: ...)` at call sites so
+/// hierarchy stays consistent. Each role takes an optional [color]; pass a
+/// `context.atl` colour (e.g. `AtlType.body(color: context.atl.text2)`).
+/// The raw [atlSans]/[atlSerif]/[atlMono] helpers remain for genuine one-offs.
+abstract final class AtlType {
+  /// Large greeting / hero (Instrument Serif). ~34.
+  static TextStyle display({Color? color, FontStyle style = FontStyle.normal}) =>
+      atlSerif(size: 34, color: color, style: style, height: 1.05);
+
+  /// Screen titles (Instrument Serif). ~26.
+  static TextStyle title({Color? color, FontStyle style = FontStyle.normal}) =>
+      atlSerif(size: 26, color: color, style: style);
+
+  /// Section / card headings (Hanken Grotesk semibold). ~18.
+  static TextStyle heading({Color? color}) =>
+      atlSans(size: 18, color: color, weight: FontWeight.w600, height: 1.2);
+
+  /// Default body copy. ~15.
+  static TextStyle body({Color? color, FontWeight weight = FontWeight.w400}) =>
+      atlSans(size: 15, color: color, weight: weight, height: 1.4);
+
+  /// Buttons and emphasised inline labels. ~13 medium.
+  static TextStyle label({Color? color, FontWeight weight = FontWeight.w500}) =>
+      atlSans(size: 13, color: color, weight: weight);
+
+  /// Secondary/supporting text. ~12.
+  static TextStyle caption({Color? color}) =>
+      atlSans(size: 12, color: color, height: 1.3);
+
+  /// Uppercase section eyebrow (tracked). ~11.
+  static TextStyle eyebrow({Color? color}) =>
+      atlSans(size: 11, color: color, weight: FontWeight.w600, letterSpacing: 0.8);
+
+  /// Times, dates, figures (JetBrains Mono). ~13.
+  static TextStyle mono({Color? color, double size = 13}) =>
+      atlMono(size: size, color: color);
+}

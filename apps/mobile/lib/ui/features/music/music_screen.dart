@@ -1,7 +1,10 @@
+import 'dart:ui';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/atl_theme.dart';
+import '../../core/widgets/widgets.dart';
 import '../../../domain/models/track.dart';
 import 'music_view_model.dart';
 
@@ -19,6 +22,10 @@ class MusicScreen extends StatefulWidget {
 class _MusicScreenState extends State<MusicScreen> {
   final _searchCtrl = TextEditingController();
   late final MusicViewModel _vm;
+
+  /// While the user is dragging the seek bar, hold the in-progress position (in
+  /// seconds) so the thumb tracks the finger; committed to the player on release.
+  double? _dragSeconds;
 
   @override
   void initState() {
@@ -132,103 +139,154 @@ class _MusicScreenState extends State<MusicScreen> {
   Widget _nowPlaying(AtlColors atl, MusicViewModel vm) {
     final t = vm.current!;
     final dur = vm.duration.inSeconds.toDouble();
-    final pos = vm.position.inSeconds.toDouble().clamp(0.0, dur <= 0 ? 1.0 : dur);
-    return Container(
-      padding: const EdgeInsets.all(18),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(22),
-        border: Border.all(color: atl.hairline),
-        boxShadow: atl.cardShadow,
-        gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [const Color(0x2E8FE9FF), atl.surface, const Color(0x26F4A9D6)],
-          stops: const [0.0, 0.5, 1.0],
+    final maxV = dur <= 0 ? 1.0 : dur;
+    final live = vm.position.inSeconds.toDouble().clamp(0.0, maxV);
+    // Track the finger while scrubbing; otherwise follow playback.
+    final sliderValue = (_dragSeconds ?? live).clamp(0.0, maxV);
+    final shownPos = _dragSeconds != null
+        ? Duration(seconds: _dragSeconds!.round())
+        : vm.position;
+
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(22),
+      child: Container(
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(22),
+          border: Border.all(color: atl.hairline),
+          boxShadow: atl.cardShadow,
         ),
-      ),
-      child: Column(
-        children: [
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              MusicArt(url: t.thumbnail, size: 64),
-              const SizedBox(width: 14),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(t.title,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: atlSans(size: 17, color: atl.text, weight: FontWeight.w600)),
-                    const SizedBox(height: 4),
-                    Text(t.artist, style: atlSans(size: 14, color: atl.text2)),
-                  ],
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 10),
-          SliderTheme(
-            data: SliderTheme.of(context).copyWith(
-              trackHeight: 3,
-              thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
-              overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
-              activeTrackColor: atl.accent,
-              inactiveTrackColor: atl.divider,
-              thumbColor: atl.accent,
+        child: Stack(
+          children: [
+            // Blurred album-art backdrop for a hero feel; falls back to the
+            // signature gradient when there's no artwork.
+            Positioned.fill(
+              child: t.thumbnail.isEmpty
+                  ? DecoratedBox(
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                          colors: [
+                            const Color(0x2E8FE9FF),
+                            atl.surface,
+                            const Color(0x26F4A9D6),
+                          ],
+                          stops: const [0.0, 0.5, 1.0],
+                        ),
+                      ),
+                    )
+                  : ImageFiltered(
+                      imageFilter: ImageFilter.blur(sigmaX: 40, sigmaY: 40),
+                      child: Image.network(t.thumbnail, fit: BoxFit.cover,
+                          errorBuilder: (_, _, _) => const SizedBox.shrink()),
+                    ),
             ),
-            child: Slider(
-              value: pos,
-              max: dur <= 0 ? 1.0 : dur,
-              onChanged: (_) {},
-              onChangeEnd: (v) => vm.seekTo(v),
+            // Scrim keeps controls legible over any artwork.
+            Positioned.fill(
+              child: DecoratedBox(
+                decoration: BoxDecoration(color: atl.surface.withValues(alpha: 0.72)),
+              ),
             ),
-          ),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 4),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text(_fmt(vm.position), style: atlMono(size: 11, color: atl.text3)),
-                Text(_fmt(vm.duration), style: atlMono(size: 11, color: atl.text3)),
-              ],
+            Padding(
+              padding: const EdgeInsets.all(AtlSpace.xl),
+              child: Column(
+                children: [
+                  // Hero artwork.
+                  Container(
+                    decoration: BoxDecoration(
+                      borderRadius: AtlRadius.mdAll,
+                      boxShadow: atl.elevatedShadow,
+                    ),
+                    child: MusicArt(url: t.thumbnail, size: 200, radius: AtlRadius.md),
+                  ),
+                  const SizedBox(height: AtlSpace.lg),
+                  Text(t.title,
+                      textAlign: TextAlign.center,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: AtlType.heading(color: atl.text)),
+                  const SizedBox(height: AtlSpace.xs),
+                  Text(t.artist,
+                      textAlign: TextAlign.center,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: AtlType.body(color: atl.text2)),
+                  const SizedBox(height: AtlSpace.md),
+                  SliderTheme(
+                    data: SliderTheme.of(context).copyWith(
+                      trackHeight: 3,
+                      thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
+                      overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
+                      activeTrackColor: atl.accent,
+                      inactiveTrackColor: atl.divider,
+                      thumbColor: atl.accent,
+                    ),
+                    child: Slider(
+                      value: sliderValue,
+                      max: maxV,
+                      onChanged: (v) => setState(() => _dragSeconds = v),
+                      onChangeEnd: (v) {
+                        vm.seekTo(v);
+                        setState(() => _dragSeconds = null);
+                      },
+                    ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 4),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(_fmt(shownPos), style: AtlType.mono(size: 11, color: atl.text3)),
+                        Text(_fmt(vm.duration), style: AtlType.mono(size: 11, color: atl.text3)),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: AtlSpace.sm),
+                  // Transport: play/pause is the clear primary; skip is secondary;
+                  // like/dislike are subordinate (smaller, muted).
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      IconButton(
+                        iconSize: 22,
+                        icon: Icon(Icons.thumb_down_alt_outlined, color: atl.text3),
+                        onPressed: vm.dislike,
+                      ),
+                      const SizedBox(width: AtlSpace.sm),
+                      IconButton(
+                        iconSize: 34,
+                        icon: Icon(Icons.skip_previous, color: atl.text),
+                        onPressed: vm.previous,
+                      ),
+                      const SizedBox(width: AtlSpace.md),
+                      _playPauseButton(atl, vm),
+                      const SizedBox(width: AtlSpace.md),
+                      IconButton(
+                        iconSize: 34,
+                        icon: Icon(Icons.skip_next, color: atl.text),
+                        onPressed: vm.next,
+                      ),
+                      const SizedBox(width: AtlSpace.sm),
+                      IconButton(
+                        iconSize: 22,
+                        icon: Icon(Icons.thumb_up_alt_outlined, color: atl.accent),
+                        onPressed: vm.like,
+                      ),
+                    ],
+                  ),
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: TextButton.icon(
+                      icon: Icon(Icons.playlist_add, size: 18, color: atl.text2),
+                      label: Text('Add to playlist', style: AtlType.label(color: atl.text2)),
+                      onPressed: () => _addToPlaylistSheet(context, vm),
+                    ),
+                  ),
+                ],
+              ),
             ),
-          ),
-          const SizedBox(height: 6),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-            children: [
-              IconButton(
-                icon: Icon(Icons.thumb_down_alt_outlined, color: atl.text3),
-                onPressed: vm.dislike,
-              ),
-              IconButton(
-                iconSize: 34,
-                icon: Icon(Icons.skip_previous, color: atl.text),
-                onPressed: vm.previous,
-              ),
-              _playPauseButton(atl, vm),
-              IconButton(
-                iconSize: 34,
-                icon: Icon(Icons.skip_next, color: atl.text),
-                onPressed: vm.next,
-              ),
-              IconButton(
-                icon: Icon(Icons.thumb_up_alt_outlined, color: atl.accent),
-                onPressed: vm.like,
-              ),
-            ],
-          ),
-          Align(
-            alignment: Alignment.centerRight,
-            child: TextButton.icon(
-              icon: Icon(Icons.playlist_add, size: 18, color: atl.text2),
-              label: Text('Add to playlist', style: atlSans(size: 13, color: atl.text2)),
-              onPressed: () => _addToPlaylistSheet(context, vm),
-            ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -422,11 +480,19 @@ class _MusicScreenState extends State<MusicScreen> {
   }
 }
 
-/// Album/thumbnail art with a graceful fallback to a music glyph.
+/// Album/thumbnail art with a graceful fallback to a music glyph. Shared by the
+/// now-playing hero, track rows, and the mini-player (pass [radius] `0` for a
+/// flush square, as the mini-player does).
 class MusicArt extends StatelessWidget {
-  const MusicArt({super.key, required this.url, required this.size});
+  const MusicArt({
+    super.key,
+    required this.url,
+    required this.size,
+    this.radius = 10,
+  });
   final String url;
   final double size;
+  final double radius;
 
   @override
   Widget build(BuildContext context) {
@@ -438,13 +504,13 @@ class MusicArt extends StatelessWidget {
       alignment: Alignment.center,
       child: Icon(Icons.music_note, size: size * 0.5, color: atl.text3),
     );
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(10),
-      child: url.isEmpty
-          ? fallback
-          : Image.network(url,
-              width: size, height: size, fit: BoxFit.cover,
-              errorBuilder: (_, _, _) => fallback),
-    );
+    final child = url.isEmpty
+        ? fallback
+        : Image.network(url,
+            width: size, height: size, fit: BoxFit.cover,
+            errorBuilder: (_, _, _) => fallback);
+    return radius > 0
+        ? ClipRRect(borderRadius: BorderRadius.circular(radius), child: child)
+        : child;
   }
 }

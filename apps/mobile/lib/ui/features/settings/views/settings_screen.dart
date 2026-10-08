@@ -1,9 +1,14 @@
+import 'dart:io' show Platform;
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../../../data/services/notification_service.dart';
 import '../../../core/animations.dart';
 import '../../../core/atl_theme.dart';
+import '../../../core/widgets/widgets.dart';
+import '../../automations/automations_screen.dart';
+import '../../code/code_screen.dart';
 import '../../mcp/mcp_screen.dart';
 import '../email_settings_screen.dart';
 import '../model_switcher.dart';
@@ -55,12 +60,12 @@ class SettingsScreen extends StatelessWidget {
                 title: 'User Profile',
                 atl: atl,
                 children: [
-                  _settingsTextField(
+                  AtlField(
                     label: 'Your Name',
-                    hintText: 'Shown in the Today greeting',
-                    controller: TextEditingController.fromValue(_valueOf(vm.userName)),
+                    hint: 'Shown in the Today greeting',
+                    value: vm.userName,
                     onChanged: vm.setUserName,
-                    atl: atl,
+                    autofillHints: const [AutofillHints.name],
                   ),
                 ],
               ),
@@ -71,22 +76,20 @@ class SettingsScreen extends StatelessWidget {
                 subtitle: 'Connection details for your Hermes server.',
                 atl: atl,
                 children: [
-                  _settingsTextField(
+                  AtlField(
                     label: 'Server URL',
-                    hintText: 'http://100.x.y.z:8642',
-                    controller: TextEditingController.fromValue(_valueOf(vm.baseUrl)),
+                    hint: 'http://100.x.y.z:8642',
+                    value: vm.baseUrl,
                     onChanged: vm.setBaseUrl,
                     keyboardType: TextInputType.url,
-                    atl: atl,
                   ),
-                  const SizedBox(height: 16),
-                  _settingsTextField(
+                  const SizedBox(height: AtlSpace.lg),
+                  AtlField(
                     label: 'API Key (API_SERVER_KEY)',
-                    hintText: 'Enter API Server Key',
-                    controller: TextEditingController.fromValue(_valueOf(vm.apiKey)),
+                    hint: 'Enter API Server Key',
+                    value: vm.apiKey,
                     onChanged: vm.setApiKey,
-                    obscureText: true,
-                    atl: atl,
+                    obscure: true,
                   ),
                 ],
               ),
@@ -97,23 +100,21 @@ class SettingsScreen extends StatelessWidget {
                 subtitle: 'Used for reminders, briefings, and push messages.',
                 atl: atl,
                 children: [
-                  _settingsTextField(
+                  AtlField(
                     label: 'ntfy Server',
-                    hintText: 'https://ntfy.sh',
-                    controller: TextEditingController.fromValue(_valueOf(vm.ntfyServer)),
+                    hint: 'https://ntfy.sh',
+                    value: vm.ntfyServer,
                     onChanged: vm.setNtfyServer,
                     keyboardType: TextInputType.url,
-                    atl: atl,
                   ),
-                  const SizedBox(height: 16),
-                  _settingsTextField(
+                  const SizedBox(height: AtlSpace.lg),
+                  AtlField(
                     label: 'ntfy Topic',
-                    hintText: 'hermes-xxxxxxxx',
-                    controller: TextEditingController.fromValue(_valueOf(vm.ntfyTopic)),
+                    hint: 'hermes-xxxxxxxx',
+                    value: vm.ntfyTopic,
                     onChanged: vm.setNtfyTopic,
-                    atl: atl,
                   ),
-                  const SizedBox(height: 16),
+                  const SizedBox(height: AtlSpace.lg),
                   _NtfyConnectionStatus(
                     hasNtfy: vm.ntfyServer.isNotEmpty && vm.ntfyTopic.isNotEmpty,
                     isConnected: notificationService.isConnected,
@@ -193,6 +194,11 @@ class SettingsScreen extends StatelessWidget {
                 ],
               ),
 
+              if (!isOnboarding && Platform.isAndroid) ...[
+                const SizedBox(height: 4),
+                const _SystemAssistantSection(),
+              ],
+
               if (!isOnboarding) ...[
                 const SizedBox(height: 28),
                 Text(
@@ -219,10 +225,26 @@ class SettingsScreen extends StatelessWidget {
                       ),
                       Divider(color: atl.hairline, height: 1),
                       _agentTile(
+                        icon: Icons.auto_awesome_outlined,
+                        title: 'Automations',
+                        subtitle: 'Scheduled routines that run on their own',
+                        onTap: () => openAutomationsScreen(context),
+                        atl: atl,
+                      ),
+                      Divider(color: atl.hairline, height: 1),
+                      _agentTile(
                         icon: Icons.extension_outlined,
                         title: 'MCP Servers',
                         subtitle: 'Add and manage tool servers',
                         onTap: () => openMcpScreen(context),
+                        atl: atl,
+                      ),
+                      Divider(color: atl.hairline, height: 1),
+                      _agentTile(
+                        icon: Icons.terminal_rounded,
+                        title: 'Atlantic Dev',
+                        subtitle: 'Drive Claude Code on your projects',
+                        onTap: () => openCodeScreen(context),
                         atl: atl,
                       ),
                       Divider(color: atl.hairline, height: 1),
@@ -244,12 +266,6 @@ class SettingsScreen extends StatelessWidget {
       ),
     );
   }
-
-  // Keeps the cursor at the end while the field reflects the VM value.
-  TextEditingValue _valueOf(String text) => TextEditingValue(
-        text: text,
-        selection: TextSelection.collapsed(offset: text.length),
-      );
 
   Widget _settingsSection({
     required String title,
@@ -284,48 +300,6 @@ class SettingsScreen extends StatelessWidget {
           ...children,
         ],
       ),
-    );
-  }
-
-  Widget _settingsTextField({
-    required String label,
-    required String hintText,
-    required TextEditingController controller,
-    required ValueChanged<String> onChanged,
-    bool obscureText = false,
-    TextInputType keyboardType = TextInputType.text,
-    required AtlColors atl,
-  }) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          label,
-          style: atlSans(size: 13, color: atl.text2, weight: FontWeight.w600),
-        ),
-        const SizedBox(height: 8),
-        Container(
-          decoration: BoxDecoration(
-            color: atl.surface2,
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: atl.hairline),
-          ),
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 2),
-          child: TextField(
-            controller: controller,
-            onChanged: onChanged,
-            obscureText: obscureText,
-            keyboardType: keyboardType,
-            style: atlSans(size: 15, color: atl.text),
-            decoration: InputDecoration(
-              border: InputBorder.none,
-              hintText: hintText,
-              hintStyle: atlSans(size: 15, color: atl.text3),
-              isDense: true,
-            ),
-          ),
-        ),
-      ],
     );
   }
 
@@ -390,7 +364,7 @@ class _ProbeBanner extends StatelessWidget {
           decoration: BoxDecoration(
             color: atl.accentSoft,
             borderRadius: BorderRadius.circular(10),
-            border: Border.all(color: atl.accent.withOpacity(0.2)),
+            border: Border.all(color: atl.accent.withValues(alpha: 0.2)),
           ),
           child: Row(
             children: [
@@ -436,9 +410,183 @@ class _StatusRow extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: color.withOpacity(0.08),
+        color: color.withValues(alpha: 0.08),
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: color.withOpacity(0.2)),
+        border: Border.all(color: color.withValues(alpha: 0.2)),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, color: color, size: 18),
+          const SizedBox(width: 9),
+          Expanded(
+            child: Text(
+              text,
+              style: atlSans(size: 13, color: color, weight: FontWeight.w500),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// "System Assistant" card: shows whether Hermes is the phone's default
+/// assistant and lets the user set it. Refreshes when the app returns to the
+/// foreground (e.g. after the system role dialog / settings screen).
+class _SystemAssistantSection extends StatefulWidget {
+  const _SystemAssistantSection();
+
+  @override
+  State<_SystemAssistantSection> createState() => _SystemAssistantSectionState();
+}
+
+class _SystemAssistantSectionState extends State<_SystemAssistantSection>
+    with WidgetsBindingObserver {
+  bool _requesting = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      context.read<SettingsViewModel>().refreshAssistantStatus();
+    }
+  }
+
+  Future<void> _setDefault() async {
+    setState(() => _requesting = true);
+    final vm = context.read<SettingsViewModel>();
+    await vm.setAsDefaultAssistant();
+    if (mounted) {
+      setState(() => _requesting = false);
+      if (vm.assistantOpenedSettings && context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Choose "Hermes Assistant" in the list, then come back.'),
+          ),
+        );
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final vm = context.watch<SettingsViewModel>();
+    final atl = context.atl;
+    final isDefault = vm.assistantIsDefault;
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 24),
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: atl.surface,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: atl.hairline),
+        boxShadow: atl.cardShadow,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'System Assistant',
+            style: atlSans(size: 15, color: atl.text, weight: FontWeight.w700),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Make Hermes your phone’s default assistant so a long-press of the '
+            'home button or the assist gesture opens it anywhere.',
+            style: atlSans(size: 12, color: atl.text3),
+          ),
+          const SizedBox(height: 16),
+          _assistantStatusRow(atl, isDefault),
+          if (isDefault != true) ...[
+            const SizedBox(height: 14),
+            Pressable(
+              onTap: _requesting ? null : _setDefault,
+              child: Container(
+                height: 48,
+                decoration: BoxDecoration(
+                  gradient: const LinearGradient(
+                    colors: [AtlColors.halo1, AtlColors.halo2, AtlColors.halo3],
+                  ),
+                  borderRadius: BorderRadius.circular(14),
+                  boxShadow: atl.cardShadow,
+                ),
+                alignment: Alignment.center,
+                child: _requesting
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Color(0xFF0A0A14),
+                        ),
+                      )
+                    : Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          const Icon(Icons.assistant_outlined,
+                              size: 18, color: Color(0xFF0A0A14)),
+                          const SizedBox(width: 8),
+                          Text(
+                            'Set as default assistant',
+                            style: atlSans(
+                                size: 14,
+                                color: const Color(0xFF0A0A14),
+                                weight: FontWeight.w600),
+                          ),
+                        ],
+                      ),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _assistantStatusRow(AtlColors atl, bool? isDefault) {
+    if (isDefault == null) {
+      return Row(
+        children: [
+          SizedBox(
+            width: 14,
+            height: 14,
+            child: CircularProgressIndicator(strokeWidth: 2, color: atl.accent),
+          ),
+          const SizedBox(width: 9),
+          Text('Checking assistant status…',
+              style: atlSans(size: 13, color: atl.text2, weight: FontWeight.w500)),
+        ],
+      );
+    }
+    final color = isDefault ? AtlColors.positive : atl.text2;
+    final icon = isDefault ? Icons.check_circle : Icons.info_outline;
+    final text = isDefault
+        ? 'Hermes is your default assistant.'
+        : 'Hermes is not set as the default assistant.';
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: isDefault
+            ? AtlColors.positive.withValues(alpha: 0.08)
+            : atl.surface2,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(
+          color: isDefault
+              ? AtlColors.positive.withValues(alpha: 0.2)
+              : atl.hairline,
+        ),
       ),
       child: Row(
         children: [
@@ -475,10 +623,10 @@ class _NtfyConnectionStatus extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       decoration: BoxDecoration(
-        color: color.withOpacity(0.08),
+        color: color.withValues(alpha: 0.08),
         borderRadius: BorderRadius.circular(12),
         border: Border.all(
-          color: color.withOpacity(0.2),
+          color: color.withValues(alpha: 0.2),
         ),
       ),
       child: Row(

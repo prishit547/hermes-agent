@@ -57,6 +57,12 @@ dependencies:
   permission_handler: ^11.3.1
   path_provider: ^2.1.4
 
+  # Android-only "floating orb": a draw-over-other-apps window (SYSTEM_ALERT_
+  # WINDOW) hosting a compact Halo orb, so you can talk to Atlantic while using
+  # other apps. Renders in a separate overlay engine; state is bridged from the
+  # main isolate. No-op on iOS (true floating windows aren't permitted there).
+  flutter_overlay_window: ^0.4.5
+
   # Music playback: just_audio streams progressively (HTTP Range) so tracks
   # start near-instantly. It plays from an in-app loopback proxy
   # (http://127.0.0.1) that relays the gateway's /music/stream/<id> — the
@@ -84,7 +90,11 @@ dependencies:
   # Atlantic design fonts: Hanken Grotesk (body), Instrument Serif (display),
   # JetBrains Mono (times/figures). Fetched + cached at runtime by google_fonts.
   google_fonts: ^6.2.1
+  # Renders rich content (email bodies, chat Markdown-as-HTML) with theme fonts.
   flutter_widget_from_html: ^0.17.2
+  # Pure-Dart Markdown → HTML, so agent replies (lists, code, emphasis) render
+  # via the existing HTML stack above instead of as flat text.
+  markdown: ^7.2.1
 
 dev_dependencies:
   flutter_test:

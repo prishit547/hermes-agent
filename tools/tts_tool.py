@@ -2573,8 +2573,17 @@ _MD_ITALIC = re.compile(r'\*(.+?)\*')
 _MD_INLINE_CODE = re.compile(r'`(.+?)`')
 _MD_HEADER = re.compile(r'^#+\s*', flags=re.MULTILINE)
 _MD_LIST_ITEM = re.compile(r'^\s*[-*]\s+', flags=re.MULTILINE)
+# Numbered-list markers at line start only ("1. ", "2) ") — line-anchored so
+# inline decimals ("3.14") and clock times ("9 a.m.") are left untouched.
+_MD_NUM_LIST_ITEM = re.compile(r'^\s*\d+[.)]\s+', flags=re.MULTILINE)
+# Blockquote markers at line start ("> quoted").
+_MD_BLOCKQUOTE = re.compile(r'^\s*>\s?', flags=re.MULTILINE)
+# Table separator rows (e.g. "|---|:--:|") — drop the whole line.
+_MD_TABLE_SEP = re.compile(r'^\s*\|?[\s:|-]*-{2,}[\s:|-]*\|?\s*$', flags=re.MULTILINE)
+_MD_TABLE_PIPE = re.compile(r'[ \t]*\|[ \t]*')
 _MD_HR = re.compile(r'---+')
 _MD_EXCESS_NL = re.compile(r'\n{3,}')
+_MD_EXCESS_SPACE = re.compile(r'[ \t]{2,}')
 
 
 def _strip_markdown_for_tts(text: str) -> str:
@@ -2586,9 +2595,14 @@ def _strip_markdown_for_tts(text: str) -> str:
     text = _MD_ITALIC.sub(r'\1', text)
     text = _MD_INLINE_CODE.sub(r'\1', text)
     text = _MD_HEADER.sub('', text)
+    text = _MD_TABLE_SEP.sub('', text)
     text = _MD_LIST_ITEM.sub('', text)
+    text = _MD_NUM_LIST_ITEM.sub('', text)
+    text = _MD_BLOCKQUOTE.sub('', text)
+    text = _MD_TABLE_PIPE.sub(' ', text)
     text = _MD_HR.sub('', text)
     text = _MD_EXCESS_NL.sub('\n\n', text)
+    text = _MD_EXCESS_SPACE.sub(' ', text)
     return text.strip()
 
 

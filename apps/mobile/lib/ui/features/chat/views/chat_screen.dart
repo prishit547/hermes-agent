@@ -8,6 +8,7 @@ import '../../../core/animations.dart';
 import '../../../core/atl_theme.dart';
 import '../../shell/shell_controller.dart';
 import '../../today/today_screen.dart' show kAssistantName;
+import 'markdown_message.dart';
 import '../slash/slash_commands.dart';
 import '../slash/slash_palette.dart';
 import '../view_models/chat_view_model.dart';
@@ -224,19 +225,23 @@ class _ChatScreenState extends State<ChatScreen> {
                 width: 30,
                 child: Text('…', style: atlSans(size: 18, color: atl.text2)),
               )
-            : Text.rich(
-                TextSpan(children: [
-                  TextSpan(
-                    text: m.content,
-                    style: atlSans(size: 15, color: atl.text, height: 1.5),
-                  ),
-                  if (m.streaming)
-                    TextSpan(
-                      text: ' |',
-                      style: atlSans(size: 15, color: atl.accent, weight: FontWeight.w700),
-                    ),
-                ]),
-              ),
+            // Stream as fast plain text with a caret; once complete, re-render
+            // as Markdown so lists/code/emphasis are formatted.
+            : m.streaming
+                ? Text.rich(
+                    TextSpan(children: [
+                      TextSpan(
+                        text: m.content,
+                        style: atlSans(size: 15, color: atl.text, height: 1.5),
+                      ),
+                      TextSpan(
+                        text: ' |',
+                        style: atlSans(
+                            size: 15, color: atl.accent, weight: FontWeight.w700),
+                      ),
+                    ]),
+                  )
+                : MarkdownMessage(m.content),
       ),
     );
   }

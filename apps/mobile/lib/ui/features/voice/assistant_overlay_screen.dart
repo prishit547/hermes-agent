@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 
 import '../../core/atl_theme.dart';
 import '../../core/halo_orb.dart';
+import '../../../data/services/audio_service.dart';
 import '../../../domain/models/message.dart';
 import '../chat/view_models/chat_view_model.dart';
 import 'voice_view_model.dart';
@@ -37,21 +38,18 @@ class _AssistantOverlayScreenState extends State<AssistantOverlayScreen>
       vsync: this,
       duration: const Duration(milliseconds: 380),
     );
-    _slide = Tween<Offset>(
-      begin: const Offset(0.0, 1.0),
-      end: Offset.zero,
-    ).animate(CurvedAnimation(
-      parent: _anim,
-      curve: Curves.easeOutCubic,
-      reverseCurve: Curves.easeInCubic,
-    ));
+    _slide = Tween<Offset>(begin: const Offset(0.0, 1.0), end: Offset.zero)
+        .animate(
+          CurvedAnimation(
+            parent: _anim,
+            curve: Curves.easeOutCubic,
+            reverseCurve: Curves.easeInCubic,
+          ),
+        );
     _fade = Tween<double>(
       begin: 0.0,
       end: 1.0,
-    ).animate(CurvedAnimation(
-      parent: _anim,
-      curve: Curves.easeOut,
-    ));
+    ).animate(CurvedAnimation(parent: _anim, curve: Curves.easeOut));
 
     _anim.forward();
 
@@ -74,10 +72,10 @@ class _AssistantOverlayScreenState extends State<AssistantOverlayScreen>
   Future<void> _dismissOverlay() async {
     // Release voice resource
     await context.read<VoiceViewModel>().reset();
-    
+
     // Animate slide-down
     await _anim.reverse();
-    
+
     // Call platform channels to pop the native Android activity
     try {
       await _channel.invokeMethod('dismiss');
@@ -94,10 +92,10 @@ class _AssistantOverlayScreenState extends State<AssistantOverlayScreen>
     if (text.trim().isEmpty) return;
     _textCtrl.clear();
     _focusNode.unfocus();
-    
+
     // Temporarily halt voice stream while typing
     context.read<VoiceViewModel>().reset();
-    
+
     // Send text turn to ChatViewModel
     final chatVm = context.read<ChatViewModel>();
     chatVm.newChat(); // Start fresh session context for quick assistant overlay
@@ -116,8 +114,11 @@ class _AssistantOverlayScreenState extends State<AssistantOverlayScreen>
 
     if (_isKeyboardMode) {
       if (chatVm.isSending) {
-        displayedLabel = chatVm.toolStatus.isNotEmpty ? chatVm.toolStatus : 'Thinking…';
-        if (chatVm.messages.isNotEmpty && chatVm.messages.last.role == MessageRole.assistant) {
+        displayedLabel = chatVm.toolStatus.isNotEmpty
+            ? chatVm.toolStatus
+            : 'Thinking…';
+        if (chatVm.messages.isNotEmpty &&
+            chatVm.messages.last.role == MessageRole.assistant) {
           displayedTranscript = chatVm.messages.last.content;
         } else {
           displayedTranscript = 'Processing request…';
@@ -136,7 +137,7 @@ class _AssistantOverlayScreenState extends State<AssistantOverlayScreen>
 
     return PopScope(
       canPop: false,
-      onPopInvoked: (didPop) {
+      onPopInvokedWithResult: (didPop, _) {
         if (didPop) return;
         _dismissOverlay();
       },
@@ -152,8 +153,8 @@ class _AssistantOverlayScreenState extends State<AssistantOverlayScreen>
                 onTap: _dismissOverlay,
                 child: AnimatedBuilder(
                   animation: _fade,
-                  builder: (_, __) => Container(
-                    color: Colors.black.withOpacity(_fade.value * 0.4),
+                  builder: (_, _) => Container(
+                    color: Colors.black.withValues(alpha: _fade.value * 0.4),
                   ),
                 ),
               ),
@@ -179,7 +180,7 @@ class _AssistantOverlayScreenState extends State<AssistantOverlayScreen>
                         MediaQuery.of(context).viewInsets.bottom + 28,
                       ),
                       decoration: BoxDecoration(
-                        color: atl.frost.withOpacity(0.85),
+                        color: atl.frost.withValues(alpha: 0.85),
                         borderRadius: const BorderRadius.only(
                           topLeft: Radius.circular(28),
                           topRight: Radius.circular(28),
@@ -196,7 +197,7 @@ class _AssistantOverlayScreenState extends State<AssistantOverlayScreen>
                             width: 38,
                             height: 4,
                             decoration: BoxDecoration(
-                              color: atl.text3.withOpacity(0.4),
+                              color: atl.text3.withValues(alpha: 0.4),
                               borderRadius: BorderRadius.circular(2),
                             ),
                           ),
@@ -275,11 +276,8 @@ class _AssistantOverlayScreenState extends State<AssistantOverlayScreen>
                               // TTS status indicator
                               _iconButton(
                                 atl,
-                                voiceVm.state == HaloState.speaking
-                                    ? Icons.volume_up
-                                    : Icons.volume_mute,
-                                () {},
-                                enabled: false, // passive indicator
+                                _outputIcon(voiceVm.audioOutput),
+                                voiceVm.cycleAudioOutput,
                               ),
                             ],
                           ),
@@ -299,14 +297,14 @@ class _AssistantOverlayScreenState extends State<AssistantOverlayScreen>
   Widget _buildVoiceOrb(VoiceViewModel vm) {
     return GestureDetector(
       onTap: vm.tapOrb,
-      child: HaloOrb(state: vm.state, size: 140),
+      child: HaloOrb(state: vm.state, size: 140, amplitude: vm.level),
     );
   }
 
   Widget _buildKeyboardInput(AtlColors atl) {
     return Container(
       decoration: BoxDecoration(
-        color: atl.surface.withOpacity(0.5),
+        color: atl.surface.withValues(alpha: 0.5),
         borderRadius: BorderRadius.circular(16),
         border: Border.all(color: atl.hairline),
       ),
@@ -330,8 +328,12 @@ class _AssistantOverlayScreenState extends State<AssistantOverlayScreen>
     );
   }
 
-  Widget _iconButton(AtlColors atl, IconData icon, VoidCallback onTap,
-      {bool enabled = true}) {
+  Widget _iconButton(
+    AtlColors atl,
+    IconData icon,
+    VoidCallback onTap, {
+    bool enabled = true,
+  }) {
     return GestureDetector(
       onTap: enabled ? onTap : null,
       child: Container(
@@ -339,12 +341,23 @@ class _AssistantOverlayScreenState extends State<AssistantOverlayScreen>
         height: 46,
         decoration: BoxDecoration(
           shape: BoxShape.circle,
-          color: atl.surface2.withOpacity(0.6),
+          color: atl.surface2.withValues(alpha: 0.6),
           border: Border.all(color: atl.hairline),
         ),
         child: Icon(icon, size: 20, color: enabled ? atl.text : atl.text3),
       ),
     );
+  }
+
+  IconData _outputIcon(AudioOutput output) {
+    switch (output) {
+      case AudioOutput.bluetooth:
+        return Icons.bluetooth;
+      case AudioOutput.earpiece:
+        return Icons.hearing;
+      case AudioOutput.speaker:
+        return Icons.volume_up_outlined;
+    }
   }
 
   Widget _endButton(VoidCallback onTap) {

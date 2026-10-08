@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'data/repositories/calendar_repository.dart';
 import 'data/repositories/chat_repository.dart';
+import 'data/repositories/code_repository.dart';
 import 'data/repositories/email_repository.dart';
 import 'data/repositories/jobs_repository.dart';
 import 'data/repositories/music_repository.dart';
@@ -24,11 +26,13 @@ import 'ui/features/chat/view_models/session_list_view_model.dart';
 import 'ui/features/email/email_view_model.dart';
 import 'ui/features/music/music_view_model.dart';
 import 'ui/features/today/today_view_model.dart';
+import 'ui/features/onboarding/welcome_intro.dart';
 import 'ui/features/settings/view_models/settings_view_model.dart';
 import 'ui/features/settings/views/settings_screen.dart';
 import 'ui/features/shell/home_shell.dart';
 import 'ui/features/shell/shell_controller.dart';
 import 'ui/features/voice/voice_view_model.dart';
+import 'ui/features/voice/overlay/overlay_orb_controller.dart';
 import 'ui/features/voice/assistant_overlay_screen.dart';
 
 /// Composition root. Builds the dependency graph once (services → repositories
@@ -82,6 +86,10 @@ class HermesApp extends StatelessWidget {
       apiClient: apiClient,
       settingsRepository: settingsRepository,
     );
+    final codeRepository = CodeRepository(
+      apiClient: apiClient,
+      settingsRepository: settingsRepository,
+    );
 
     return MultiProvider(
       providers: [
@@ -97,6 +105,7 @@ class HermesApp extends StatelessWidget {
         Provider.value(value: voiceStreamService),
         Provider.value(value: emailRepository),
         Provider.value(value: musicRepository),
+        Provider.value(value: codeRepository),
         ChangeNotifierProvider(create: (_) => ShellController()),
         ChangeNotifierProvider(
           create: (_) => ChatViewModel(
@@ -130,7 +139,11 @@ class HermesApp extends StatelessWidget {
           ),
         ),
         ChangeNotifierProvider(
-          create: (_) => VoiceViewModel(voiceStreamService, audioService),
+          create: (_) => VoiceViewModel(
+            voiceStreamService,
+            audioService,
+            overlay: OverlayOrbController(),
+          ),
         ),
         ChangeNotifierProvider(
           create: (_) => SettingsViewModel(
@@ -146,16 +159,23 @@ class HermesApp extends StatelessWidget {
           theme: buildAtlTheme(Brightness.light),
           darkTheme: buildAtlTheme(Brightness.dark),
           themeMode: theme.mode,
-          initialRoute: '/',
+          // No hardcoded initialRoute — use the platform default route so the
+          // assistant activity (which sets it to '/assistant_overlay') resolves
+          // correctly instead of always starting at '/'.
+          onGenerateInitialRoutes: (initialRoute) {
+            // When launched as the system assistant, the *only* route in the
+            // stack is the transparent voice sheet — no Today screen behind it —
+            // so the translucent activity shows the underlying app (à la Gemini).
+            if (initialRoute == '/assistant_overlay') {
+              return [_assistantOverlayRoute()];
+            }
+            return [
+              MaterialPageRoute(builder: (_) => const _RootGate()),
+            ];
+          },
           onGenerateRoute: (settings) {
             if (settings.name == '/assistant_overlay') {
-              return PageRouteBuilder(
-                pageBuilder: (_, __, ___) => const AssistantOverlayScreen(),
-                opaque: false,
-                barrierColor: Colors.transparent,
-                transitionDuration: Duration.zero,
-                reverseTransitionDuration: Duration.zero,
-              );
+              return _assistantOverlayRoute();
             }
             return MaterialPageRoute(
               settings: settings,
@@ -181,13 +201,62 @@ class HermesApp extends StatelessWidget {
   }
 }
 
-/// Routes to onboarding until a server + key are configured, then to the shell.
-class _RootGate extends StatelessWidget {
+/// The transparent voice-sheet route used when Atlantic is invoked as the
+/// system assistant. Kept as the *only* route in that engine's stack so the
+/// underlying app shows through (Gemini-style), never Atlantic's own Today.
+Route<dynamic> _assistantOverlayRoute() => PageRouteBuilder(
+      settings: const RouteSettings(name: '/assistant_overlay'),
+      pageBuilder: (_, _, _) => const AssistantOverlayScreen(),
+      opaque: false,
+      barrierColor: Colors.transparent,
+      transitionDuration: Duration.zero,
+      reverseTransitionDuration: Duration.zero,
+    );
+
+/// Routes first-run users through the welcome/permission intro, then the
+/// connection form until a server + key are configured, then to the shell.
+class _RootGate extends StatefulWidget {
   const _RootGate();
+
+  @override
+  State<_RootGate> createState() => _RootGateState();
+}
+
+class _RootGateState extends State<_RootGate> {
+  static const _introSeenKey = 'hermes.intro_seen';
+
+  /// null while loading the flag; then true/false.
+  bool? _introSeen;
+
+  @override
+  void initState() {
+    super.initState();
+    SharedPreferences.getInstance().then((prefs) {
+      if (mounted) {
+        setState(() => _introSeen = prefs.getBool(_introSeenKey) ?? false);
+      }
+    });
+  }
+
+  Future<void> _finishIntro() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_introSeenKey, true);
+    if (mounted) setState(() => _introSeen = true);
+  }
 
   @override
   Widget build(BuildContext context) {
     final settings = context.watch<SettingsRepository>();
+    final seen = _introSeen;
+    if (seen == null) {
+      // Flag still loading — brief neutral hold on the app background.
+      return Container(
+        decoration: BoxDecoration(gradient: context.atl.appBg),
+      );
+    }
+    if (!seen) {
+      return WelcomeIntro(onDone: _finishIntro);
+    }
     if (!settings.current.isConfigured) {
       return const SettingsScreen(isOnboarding: true);
     }

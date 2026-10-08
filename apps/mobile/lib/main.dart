@@ -6,6 +6,18 @@ import 'data/services/notification_service.dart';
 import 'data/services/reminder_service.dart';
 import 'data/services/settings_service.dart';
 import 'ui/core/theme_controller.dart';
+import 'ui/features/voice/overlay/overlay_orb_entry.dart';
+
+/// Separate Flutter entrypoint for the Android floating-orb overlay window.
+///
+/// `flutter_overlay_window` launches a dedicated engine and resolves the Dart
+/// symbol named `overlayMain` — it must live here in `main.dart` and carry the
+/// `vm:entry-point` pragma so tree-shaking keeps it.
+@pragma('vm:entry-point')
+void overlayMain() {
+  WidgetsFlutterBinding.ensureInitialized();
+  runApp(const OverlayOrbApp());
+}
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
